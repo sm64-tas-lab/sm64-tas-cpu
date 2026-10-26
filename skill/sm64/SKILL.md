@@ -19,7 +19,7 @@ Do it yourself, step by step, and tell the user what you are doing. Windows 10/1
    user what to install (https://git-scm.com, https://www.python.org/downloads/ with "Add python.exe to PATH") and
    stop until it is there.
 2. Pick a folder (ask the user, default `%USERPROFILE%\sm64`) and clone:
-   `git clone https://github.com/sm64-tas-lab/sm64-tas-cpu`
+   `git clone -b public https://github.com/sm64-tas-lab/sm64-tas-cpu`
 3. Ask the user for the path of **their own** Super Mario 64 (USA) ROM (.z64 / .n64 / .v64). Never download a ROM,
    never look for one on the internet: the game DLLs are locked and only open with the user's original dump. The
    Japanese ROM is optional (only for the JP version).
@@ -29,7 +29,7 @@ Do it yourself, step by step, and tell the user what you are doing. Windows 10/1
    registers `sm64-headless` (Claude Code with this skill, Gemini CLI, `mcp.json` for other clients). Read its
    output: "is not the original Super Mario 64" means a wrong or modified ROM; ask for another dump.
 5. Check it: `python sm64-tas-cpu/agent/sm64_headless_mcp.py --demo` must print a start, a scan, moves and an export.
-6. Optional, the real emulator: `git clone https://github.com/sm64-tas-lab/sm64-mupen-bridge` beside it, then
+6. Optional, the real emulator: `git clone -b public https://github.com/sm64-tas-lab/sm64-mupen-bridge` beside it, then
    `powershell -ExecutionPolicy Bypass -File sm64-mupen-bridge/install.ps1 -Yes -NoHeadless -Rom "<ROM>"`
    (it finds Mupen64-rr-lua or downloads the official release, and registers the `sm64` server).
 7. MCP servers load when the AI client starts: tell the user to restart it (Claude Code: exit and run `claude`
