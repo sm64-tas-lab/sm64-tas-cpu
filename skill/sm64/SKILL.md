@@ -56,7 +56,7 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
 ## 3. Checking in the emulator (`sm64`, optional)
 
 `start_mupen(savestate=...)` once, `get_state`, `step_frames`, `save_memstate` / `load_memstate`, `screenshot`,
-`confirm_movie` to replay a movie natively and prove it.
+`export_run`, then `replay_movie` replays the movie on a fresh Mupen and returns the final state to prove it.
 
 ## Rules
 
