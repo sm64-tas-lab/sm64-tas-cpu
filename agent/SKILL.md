@@ -10,8 +10,9 @@ with Mupen64. Everything you read comes straight from RAM.
 
 ## Start
 
-- `start(st=...)` from a Mupen savestate, or `start(movie=...)` (.m64 / .hls from power-on), or `start()` from
-  power-on. `version` is `us` (default) or `jp`. Call it once.
+- `start()`: Mario standing in the castle grounds (US). `start(st=...)` from a Mupen savestate,
+  `start(movie=...)` (.m64 / .hls from power-on), `start(power_on=true)` the console just switched on.
+  `version` is `us` (default) or `jp`.
 
 ## Perceive before acting
 

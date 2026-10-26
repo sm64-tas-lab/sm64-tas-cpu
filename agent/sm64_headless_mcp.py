@@ -94,8 +94,8 @@ class Play:
 
     # ---- the tools ----------------------------------------------------------------------------------------------
     def t_start(self, a):
-        """a game: from a Mupen savestate (st), a movie / input file (movie: .m64 / .hls / .json, from power-on), or
-        power-on itself; version us / jp"""
+        """a game: from a Mupen savestate (st), a movie / input file (movie: .m64 / .hls / .json, from power-on), else
+        Mario standing in the castle grounds (US; power_on=true: the console just switched on); version us / jp"""
         import macros as M
         import sm64hl
         import st_brute
@@ -108,6 +108,8 @@ class Play:
             self.start_st = os.path.abspath(a['st'])
         elif a.get('movie'):
             g.load_file(a['movie'])
+        elif not a.get('power_on') and str(a.get('version', 'us')).lower() == 'us':
+            g.load_file(os.path.join(ROOT, 'headless', 'start_grounds.hls'))     # (Mario standing in the castle grounds)
         self.g, self.M = g, M
         self.run = M.Runner(g, st_brute.Stick(g).raw)
         self.root = (g.save(), len(g.history))
@@ -332,8 +334,10 @@ class Play:
 
 
 TOOLS_SPEC = [
-    ('start', 'Open a game: st = a Mupen savestate, or movie = a .m64 / .hls played from power-on, or nothing '
-              '(power-on); version us / jp. Call once.', {'st': 'string', 'movie': 'string', 'version': 'string'}, []),
+    ('start', 'Open a game: st = a Mupen savestate, or movie = a .m64 / .hls played from power-on, or nothing: Mario '
+              'standing in the castle grounds (US; power_on=true for the console just switched on); version us / jp. '
+              'Call once (again to start over).',
+     {'st': 'string', 'movie': 'string', 'version': 'string', 'power_on': 'boolean'}, []),
     ('state', "Mario: position, speeds, facing, action, level / area, coins, stars, health, frames played.", {}, []),
     ('scan', "Read from RAM: objects (behaviour name, position, distance, height above Mario), floors by height, "
              "walls. filter='coin' / 'star' / any part of a behaviour name finds every match in the level.",
