@@ -537,7 +537,7 @@ def _approach(g, rd):
         n = len(c['insn']) // 2
         if ctypes.string_at(a, n) != bytes.fromhex(c['insn']):
             raise RuntimeError(f"camera_approach: unexpected code at +{c['at']:#x} ({c['fn']}): this DLL build differs "
-                               '(rebuild romhack/_approach_sites.json with approach_sites_build.py)')
+                               '(romhack/_approach_sites.json matches the shipped sm64_us.dll only)')
         k = c['width'] // 4
         cur = struct.unpack('<%df' % k, ctypes.string_at(g.base + c['const'], c['width']))
         new = tuple(struct.unpack('<f', struct.pack('<f', fm(v)))[0] for v in cur)
@@ -553,7 +553,7 @@ def _approach(g, rd):
         a = g.base + m['at']
         if ctypes.string_at(a, m['len']) != bytes.fromhex(m['insn']):
             raise RuntimeError(f"camera_approach: unexpected code at +{m['at']:#x} ({m['fn']}): this DLL build differs "
-                               '(rebuild romhack/_approach_sites.json with approach_sites_build.py)')
+                               '(romhack/_approach_sites.json matches the shipped sm64_us.dll only)')
         dat = m['data_at']
         code = bytearray.fromhex(m['stub']) + bytes(20)
         struct.pack_into('<f', code, dat['ONE'], 1.0)

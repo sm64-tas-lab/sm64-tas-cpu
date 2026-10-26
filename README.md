@@ -98,7 +98,7 @@ write_m64(g.history, 'out/run.m64', poweron=True)
 |---|---|
 | `agent/` | the MCP server for AIs (`sm64_headless_mcp.py`) |
 | `skill/sm64/` | the skill to give an AI: it sets everything up, then plays |
-| `headless/` | the engine (`sm64hl.py`), CLI `hl.py`, process pool, Mupen `.st` reader, ROM lock (`rom_lock.py`) |
+| `headless/` | the engine (`sm64hl.py`), CLI `hl.py`, Mupen `.st` reader, move macros, rom hack support, ROM lock (`rom_lock.py`) |
 | `tas_lib/` | Python helpers (`hlx.py`: objects, closed-loop stick, long-jump chains, collect helpers) |
 | `sm64_us.dll.locked`, `sm64_jp.dll.locked` | the game compiled natively, opened by INSTALL.bat with your ROM |
 | `install.py`, `INSTALL.bat` | the installer |
