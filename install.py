@@ -98,9 +98,9 @@ def register(python):
         r = subprocess.run([claude, 'mcp', 'add', '--scope', 'user', 'sm64-headless', '--', python, SERVER],
                            capture_output=True, text=True)
         say('  Claude Code: %s' % ('sm64-headless added' if r.returncode == 0 else 'failed: ' + (r.stderr or '')[-200:]))
-        skill = os.path.join(os.path.expanduser('~'), '.claude', 'skills', 'sm64-headless')
+        skill = os.path.join(os.path.expanduser('~'), '.claude', 'skills', 'sm64')
         os.makedirs(skill, exist_ok=True)
-        shutil.copy(os.path.join(ROOT, 'agent', 'SKILL.md'), os.path.join(skill, 'SKILL.md'))
+        shutil.copy(os.path.join(ROOT, 'skill', 'sm64', 'SKILL.md'), os.path.join(skill, 'SKILL.md'))
         say('  Claude Code skill: %s' % skill)
     else:
         say('  Claude Code not found (claude): add it later with: claude mcp add sm64-headless -- "%s" "%s"' % (python, SERVER))

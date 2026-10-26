@@ -9,7 +9,14 @@ read Mario and every object from RAM, walk, use the engine's moves (dive rollout
 wall kick, BLJ...), try a move at dozens of facings in a fraction of a second, keep checkpoints, and export its run as
 a `.m64` to replay in Mupen.
 
-## Install (Windows, 2 minutes)
+## Install: give the skill to your AI
+
+The simplest way: put [`skill/sm64/SKILL.md`](skill/sm64/SKILL.md) in your AI's skills (Claude Code:
+`%USERPROFILE%\.claude\skills\sm64\SKILL.md`), or paste it in the chat, and ask *"set up Super Mario 64"*.
+The AI checks git and Python, clones this repo, asks for the path of your own ROM, runs the installer, and tells you
+to restart it. Then ask it to play.
+
+## Install by hand (Windows, 2 minutes)
 
 You need **Windows 10/11 x64**, **Python 3.9+ 64-bit** (https://www.python.org/downloads/, tick "Add python.exe to
 PATH") and **your own Super Mario 64 (USA) ROM** (the JP ROM is optional).
@@ -89,7 +96,8 @@ write_m64(g.history, 'out/run.m64', poweron=True)
 
 | Path | Role |
 |---|---|
-| `agent/` | the MCP server for AIs (`sm64_headless_mcp.py`) and its Claude Code skill |
+| `agent/` | the MCP server for AIs (`sm64_headless_mcp.py`) |
+| `skill/sm64/` | the skill to give an AI: it sets everything up, then plays |
 | `headless/` | the engine (`sm64hl.py`), CLI `hl.py`, process pool, Mupen `.st` reader, ROM lock (`rom_lock.py`) |
 | `tas_lib/` | Python helpers (`hlx.py`: objects, closed-loop stick, long-jump chains, collect helpers) |
 | `sm64_us.dll.locked`, `sm64_jp.dll.locked` | the game compiled natively, opened by INSTALL.bat with your ROM |
