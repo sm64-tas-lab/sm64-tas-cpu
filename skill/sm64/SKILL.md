@@ -46,6 +46,8 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   by height, walls; `scan(filter="coin")` every match in the level.
 - Act: `goto(x, z, style="walk" | "longjump")`, `collect(name="RedCoin")` (trust `collected`), `move(name, x, z)`
   (`moves()` lists them; a refused move comes back with a `warning`: read it and `undo`), `walk`, `step`.
+  When `state()` says `blocked` (a sign, a dialog, a cutscene), call `close_dialog`. A failed `collect` returns
+  `dy` / `dist` / `hint`: an object above Mario needs its platform reached first (scan floors, jump onto it).
 - Use the speed: `try(...)` plays and takes back; `best(name or frames, x, z, spread, step, commit=true)` tries a
   move at dozens of facings in a fraction of a second and keeps the best: prefer it to guessing an angle.
   `checkpoint(name)` / `restore(name)` / `undo(n)`.

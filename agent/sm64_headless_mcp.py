@@ -81,6 +81,13 @@ class Play:
         out['coins'], out['stars'] = g.coins, g.stars
         out['health'] = (g.health >> 8) & 0xFF
         out['frames'] = self._frames()
+        try:
+            import hlx
+            if hlx.blocked(g):
+                out['blocked'] = ('a dialog, the pause menu or a cutscene holds the game: call close_dialog (it presses A '
+                                  'until it is over)')
+        except Exception:
+            pass
         return out
 
     def aim(self, a):
@@ -275,6 +282,13 @@ class Play:
         far = math.hypot(o['pos_x'] - m['pos_x'], o['pos_z'] - m['pos_z']) > 800
         r = self.t_goto({'x': o['pos_x'], 'z': o['pos_z'], 'stop': 30, 'style': 'longjump' if far else 'walk'})
         got = taken()
+        for _ in range(90):                 # (a long jump can end in the air: land first, the object checked each frame)
+            if got or not g.mario()['action'] & 0x800:
+                break
+            self.run.press(self.aim({'x': o['pos_x'], 'z': o['pos_z']}), 0, 32.0)
+            got = taken()
+        if not self.stack or self.stack[-1][1] != len(g.history):
+            self._push('land')
         if not got:
             n0 = len(self.stack)
             tries = ([([], n) for n in (1, 2, 3, 4, 6, 8, 10, 14, 18, 24)] +
@@ -289,7 +303,36 @@ class Play:
         return {'collected': bool(got), 'target': {'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']),
                                                    'z': round(o['pos_z'])},
                 'coins': [c0, g.coins], 'stars': [s0, g.stars], 'goto': {k: r[k] for k in ('reached', 'why', 'frames')},
-                'mario': self.state()}
+                'mario': self.state(), **({} if got else self._why_missed(o))}
+
+    def _why_missed(self, o):
+        m = self.g.mario()
+        dy = o['pos_y'] - m['pos_y']
+        d = math.hypot(o['pos_x'] - m['pos_x'], o['pos_z'] - m['pos_z'])
+        if dy > 150:
+            hint = ('the object is %d units above Mario: reach its platform first (scan its floors, goto / move a jump '
+                    'onto it), then collect again' % dy)
+        elif dy < -300:
+            hint = 'the object is %d units below Mario: get down to its floor first' % -dy
+        elif d > 100:
+            hint = 'Mario stopped %d units away (a wall or a gap?): scan the walls, try another approach' % d
+        else:
+            hint = 'Mario is on it but nothing was taken: it may need an action (a punch, a ground pound) or be inactive'
+        return {'dy': round(dy), 'dist': round(d), 'hint': hint}
+
+    def t_close_dialog(self, a):
+        g = self.need()
+        import hlx
+        n = len(g.history)
+        hlx.close_dialog(g, maxf=int(a.get('frames', 400)))
+        for _ in range(120):                # (the text box gone, Mario still ends his reading animation: neutral, no jump)
+            if not hlx.blocked(g):
+                break
+            g.step((0, 0, 0, 0))
+        self._push('close_dialog')
+        out = self.state()
+        out['frames_played'] = len(g.history) - n
+        return out
 
     def t_checkpoint(self, a):
         self.need()
@@ -366,6 +409,8 @@ TOOLS_SPEC = [
     ('collect', "Go and take an object (part of its behaviour name: 'coin', 'RedCoin', 'Star'...; near_x / near_z: "
                 "the one nearest that point); collected=true only if a counter went up or the object is gone.",
      {'name': 'string', 'near_x': 'number', 'near_z': 'number'}, ['name']),
+    ('close_dialog', 'Press A (one frame out of two) until the open dialog / text box closes; state() says '
+                     "'blocked' when one holds the game.", {'frames': 'number'}, []),
     ('checkpoint', 'Remember the run so far under a name.', {'name': 'string'}, []),
     ('restore', 'Go back to a checkpoint.', {'name': 'string'}, []),
     ('undo', 'Take back the last n calls that played frames.', {'n': 'number'}, []),
