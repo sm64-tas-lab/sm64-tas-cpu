@@ -1,0 +1,7 @@
+*.dll binary
+*.cubin binary
+*.m64 binary
+*.st binary
+*.npy binary
+*.bin binary
+*.ptx binary

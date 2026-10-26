@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.z64
+*.n64
+*.v64
+*.log
+*.tmp
+*.old
+.setup_paths_state.json
+headless/_inst/
+headless/_gen/
+headless/_stick_exact.npz
+headless/romhack/*.lib
+
+# autopilot: the AIs' task / summary files (never committed)
+.autopilot/
+
+# the game itself: never in the repo (only the ROM-locked *.dll.locked files)
+*.dll
+*.z64
+*.n64
+*.v64
+*.st
+__pycache__/
+config.json
+mcp.json
+deps/
+out/
+headless/_st_index.json
