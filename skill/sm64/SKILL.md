@@ -58,6 +58,26 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
 `start_mupen(savestate=...)` once, `get_state`, `step_frames`, `save_memstate` / `load_memstate`, `screenshot`,
 `export_run`, then `replay_movie` replays the movie on a fresh Mupen and returns the final state to prove it.
 
+## When something goes wrong
+
+Tell the user plainly what failed and what it means, in their language. Then:
+
+1. Try the known fixes:
+   - "is not the original Super Mario 64": the ROM is a modified or other version; ask for an original US dump.
+   - `pip` fails: run `python -m pip install --upgrade pip`, then the installer again.
+   - Python too old or 32-bit, git missing: say what to install (step 1) and wait.
+   - The tools are missing after a restart: `claude mcp list`, or add the command from the repo's `mcp.json` by hand.
+   - `git clone` fails: check the internet connection, then retry.
+   - A tool returns an error during play: read it, `undo` or `restore` a checkpoint, try another approach.
+2. If it still fails, write a ready-to-send report for the user: what they asked, the exact command or tool call,
+   its full output, `python --version`, the Windows version, and the ROM's MD5
+   (`python -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "<ROM>"`), never
+   the ROM itself. Give them the link to open an issue with it:
+   https://github.com/sm64-tas-lab/sm64-tas-cpu/issues/new (or https://github.com/sm64-tas-lab/sm64-mupen-bridge/issues/new
+   for the emulator part).
+
+Never hide a failure or work around it by downloading a ROM or editing the game files.
+
 ## Rules
 
 - Only claim a result a tool returned (`collected=true`, `reached=true`, a counter up, a movie confirmed).
