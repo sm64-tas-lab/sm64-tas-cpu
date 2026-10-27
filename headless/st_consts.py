@@ -398,9 +398,10 @@ class ConstMap:
         for s in self.by_seg:
             self.by_seg[s].sort(key=lambda x: x[0])
         rs = re.compile(r'_seg([0-9a-fA-F]{1,2})_')
+        rp = re.compile(r'_path\d*$|_trajectory_')
         self.unaddr = {}
         for v in _vars():
-            if rx.search(v['n']) or v['fn'] or not v['type']:
+            if rx.search(v['n']) or v['fn'] or not v['type'] or not rp.search(v['n']):
                 continue
             m = rs.search(v['n'])
             size = NM.layout(v['type'])[0] if m else 0
