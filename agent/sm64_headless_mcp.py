@@ -355,6 +355,7 @@ class Play:
         n, legs = len(g.history), []
         where0 = (g.mario()['level'], g.mario()['area'])
         wet = lambda: self.swimmer().in_water()
+        before = self._counters()
         if style == 'swim':
             if not wet():
                 why = 'not in the water (style walk or longjump on land)'
@@ -395,6 +396,9 @@ class Play:
         m = g.mario()
         out = {'reached': why == 'arrived', 'why': why, 'frames': len(g.history) - n, 'legs': legs,
                'dist_left': round(math.hypot(tx - m['pos_x'], tz - m['pos_z']), 1), 'mario': self.state()}
+        took = self._took(before)
+        if took:
+            out['took'] = took                  # (on the way: a coin, a red coin or a star Mario ran into)
         if why == WHY['stuck']:
             out['hint'] = ('not there: something holds Mario on the straight line (a wall, a slope, a gap, an object): '
                            'path(x, z) gives the turns around the walls; scan shows the walls and floors; a jump may get '
@@ -413,6 +417,15 @@ class Play:
         elif why == 'in the water':
             out['hint'] = 'Mario is in the water: swim(x, z) or goto with style swim'
         return out
+
+    def _counters(self):
+        g = self.g
+        return {'coins': g.coins, 'stars': g.stars,
+                'red_coins': g.read('gRedCoinsCollected', 'B') if 'gRedCoinsCollected' in g.syms else 0}
+
+    def _took(self, before):
+        now = self._counters()
+        return {k: now[k] - before[k] for k in now if now[k] != before[k]}
 
     def _dead(self):
         m = self.g.mario()
@@ -506,10 +519,13 @@ class Play:
         nz = float(a['near_z']) if a.get('near_z') is not None else m['pos_z']
         o = min(objs, key=lambda q: math.hypot(q['pos_x'] - nx, q['pos_z'] - nz))
         off = math.hypot(o['pos_x'] - nx, o['pos_z'] - nz)
+        before = self._counters()
         if a.get('near_x') is not None and off > 300.0:
             return {'collected': False, 'why': 'no %s near (%.0f, %.0f): the nearest is %.0f units away at (%.0f, %.0f, '
-                                               '%.0f), already taken (state: coins, red_coins) or not there' % (a['name'], nx, nz, off, o['pos_x'],
-                                                                                    o['pos_y'], o['pos_z'])}
+                                               '%.0f): already taken (a goto on the way may have taken it: its took, and state red_coins say so) or '
+                                               'not there yet (a star appears once its red coins or switch are done)' % (a['name'], nx, nz, off, o['pos_x'],
+                                                                                    o['pos_y'], o['pos_z']),
+                    'red_coins': self._counters()['red_coins']}
         c0, s0 = g.coins, g.stars
 
         def taken():
@@ -525,7 +541,9 @@ class Play:
             got = taken()
         if not self.stack or self.stack[-1][1] != len(g.history):
             self._push('land')
-        return {'collected': bool(got), 'target': {'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']),
+        took = self._took(before)
+        return {'collected': bool(got), **({'took': took} if took else {}),
+                'target': {'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']),
                                                    'z': round(o['pos_z'])},
                 'coins': [c0, g.coins], 'stars': [s0, g.stars], 'goto': {k: r[k] for k in ('reached', 'why', 'frames')},
                 'mario': self.state(), **({} if got else self._why_missed(o))}
@@ -696,7 +714,7 @@ SIMPLE = {
     'undo': 'Take back the last action.',
     'export': 'Save the run as a .m64 movie: path.',
 }
-KEEP = ('reached', 'collected', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+KEEP = ('reached', 'collected', 'took', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
         'error', 'here', 'warps', 'run_frames', 'note')
 MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'red_coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
          'level_name')
