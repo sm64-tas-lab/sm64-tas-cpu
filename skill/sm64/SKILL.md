@@ -67,8 +67,14 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   fade, the star select and the course's opening text, and stops the frame Mario can move (it plays nothing when
   nothing holds the game). From the castle grounds: `goto(0, -3155)` (the front door; `close_dialog` for Lakitu's
   text on the way and the hall's text after).
-- Inside buildings the straight line often meets a wall: `path(x, z)` first (it goes through open doors and up
-  stairs); no path at all means a jump, a locked door (star doors need stars) or another way.
+- Inside buildings and on hills the straight line often meets a wall: `path(x, z)` first (it goes through open
+  doors and up stairs), then `goto` each turn with `stop=120` (a turn is only where to pass; the last one is the
+  target). `path` sees the walls, not the objects: `goto` stuck says `objects_near` (a gate, a cannon). A target
+  above its floor (a floating coin, a ledge) gives `above_floor`: the walk ends under it, the way up is yours. No
+  path at all means a jump, a locked door (star doors need stars) or another way.
+- `goto`'s `why`: `arrived`; `stuck` (held in place: a wall, a slope, a gap, an object); `out of frames` (still on
+  the way: goto again or more `frames`); `died` (a pit, lava, an enemy: `restore` a checkpoint); a text; the water;
+  the level changed. `state().red_coins` counts the red coins taken in this course (a coin can be taken on the way).
 - Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one). Started from `start()`
   (no .st), the movie begins at power-on: `frames` counts the boot too, `run_frames` the run, and in Mupen it is
   played from power-on with `play_inputs(m64=...)`.
