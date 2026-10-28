@@ -11,6 +11,7 @@ WALL_LO, WALL_HI = 30.0, 150.0      # (the walls Mario's body meets: from 30 to 
 STEEP_NY = 0.7           # (a floor steeper than this slides Mario down: not walked)
 BAD_FLOORS = {0x01, 0x0A, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27}   # (lava, death plane, quicksand)
 BUCKET = 200.0
+MARIO_R = 40.0           # (Mario's body: a wall nearer than this to his line stops him, crossed or not)
 CLEAR, CLEAR_COST = 50.0, 400.0    # (Mario's body: a cell this near a wall costs more, kept for narrow ways)
 
 
@@ -24,6 +25,12 @@ class Nav:
                 if s['normal'][1] >= STEEP_NY and s['type'] not in BAD_FLOORS:
                     self._raster(v, s['normal'], s['origin'])
             elif s['kind'] == 'wall':
+                self._wall(v)
+        for v, n in object_surfaces(g):
+            if n[1] > 0.01:
+                if n[1] >= STEEP_NY:
+                    self._raster(v, n, -(n[0] * v[0][0] + n[1] * v[0][1] + n[2] * v[0][2]))
+            elif n[1] >= -0.01:
                 self._wall(v)
 
     # ---- building ----------------------------------------------------------------------------------------------
@@ -71,7 +78,7 @@ class Nav:
                     if id(w) in seen or w[3] < lo or w[2] > hi:
                         continue
                     seen.add(id(w))
-                    if _cross(p, q, w[0], w[1]):
+                    if _cross(p, q, w[0], w[1]) or _segs_dist(p, q, w[0], w[1]) < MARIO_R:
                         return True
         return False
 
@@ -208,10 +215,96 @@ def _seg_dist(x, z, a, b):
     return math.hypot(x - (a[0] + t * ex), z - (a[1] + t * ez))
 
 
+def _segs_dist(p, q, a, b):
+    return min(_seg_dist(p[0], p[1], a, b), _seg_dist(q[0], q[1], a, b), _seg_dist(a[0], a[1], p, q),
+               _seg_dist(b[0], b[1], p, q))
+
+
 def _cross(p, q, a, b):
     def o(u, v, w):
         return (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
     return (o(p, q, a) * o(p, q, b) < 0) and (o(a, b, p) * o(a, b, q) < 0)
+
+
+FORCE_TYPES = {0x04, 0x0E, 0x24, 0x25, 0x27, 0x2C, 0x2D}     # (decomp surface_load.c surface_has_force: a 4th value)
+TERRAIN_LOAD_VERTICES, TERRAIN_LOAD_CONTINUE = 0x40, 0x41
+DOORS = (1 << 2) | (1 << 11)     # (oInteractType INTERACT_DOOR | INTERACT_WARP_DOOR)
+
+
+def _fields():
+    import n64mem as NM
+    o = {m[3]: m for m in NM.members(NM.find_type('Object'))}
+    gfx = {m[3]: m for m in NM.members([m for m in NM.members(o['header'][2]) if m[3] == 'gfx'][0][2])}
+    return o['collisionData'][1], o['transform'][1], gfx['scale'][1]
+
+
+def _zxy(o, g, raw=216, face=0x12):
+    """the object's transform from its position and face angles (decomp math_util.c mtxf_rotate_zxy_and_translate,
+    object_helpers.c obj_build_transform_from_pos_and_angle)"""
+    ang = [g.read(o['addr'] + raw + 4 * (face + i), 'i') * math.pi / 32768.0 for i in range(3)]
+    sx, cx, sy, cy, sz, cz = (math.sin(ang[0]), math.cos(ang[0]), math.sin(ang[1]), math.cos(ang[1]),
+                              math.sin(ang[2]), math.cos(ang[2]))
+    return [[cy * cz + sx * sy * sz, cx * sz, -sy * cz + sx * cy * sz, 0],
+            [-cy * sz + sx * sy * cz, cx * cz, sy * sz + sx * cy * cz, 0],
+            [cx * sy, -sx, cx * cy, 0],
+            [o['pos_x'], o['pos_y'], o['pos_z'], 1]]
+
+
+def object_surfaces(g):
+    """the collision of the objects that carry one (gates, cage doors, platforms...), placed as the game places it
+    (decomp surface_load.c load_object_collision_model / transform_object_vertices): the game loads it only near
+    Mario, path needs it from afar -> [(3 vertices, normal)]"""
+    import ctypes
+    try:
+        off_col, off_mtx, off_scale = _fields()
+    except Exception:
+        return []
+    out = []
+    for o in g.objects():
+        col = g.read(o['addr'] + off_col, 'Q')
+        if not col or g.read(o['addr'] + 216 + 4 * 0x2A, 'I') & DOORS:
+            continue                        # (a door opens as Mario walks in: not a wall for the path)
+        try:
+            m = [[g.read(o['addr'] + off_mtx + 16 * i + 4 * j, 'f') for j in range(4)] for i in range(4)]
+            sc = [g.read(o['addr'] + off_scale + 4 * i, 'f') for i in range(3)]
+            if math.dist(m[3][:3], (o['pos_x'], o['pos_y'], o['pos_z'])) > 50.0:
+                # (not built yet, or another object's: the game builds it only near Mario; from its position and facing)
+                m = _zxy(o, g)
+            m = [[m[i][j] * sc[i] for j in range(3)] + [m[i][3]] for i in range(3)] + [m[3]]
+            h = lambda k: ctypes.c_short.from_address(col + 2 * k).value
+            k = 0
+            if h(k) != TERRAIN_LOAD_VERTICES:
+                continue
+            nv = h(k + 1)
+            k += 2
+            if not 0 < nv < 600:
+                continue
+            vs = []
+            for _ in range(nv):
+                x, y_, z = h(k), h(k + 1), h(k + 2)
+                k += 3
+                vs.append(tuple(x * m[0][c] + y_ * m[1][c] + z * m[2][c] + m[3][c] for c in range(3)))
+            for _ in range(64):
+                t = h(k)
+                if t == TERRAIN_LOAD_CONTINUE:
+                    break
+                n = h(k + 1)
+                k += 2
+                step = 4 if t in FORCE_TYPES else 3
+                for _ in range(max(0, n)):
+                    a, b, c = (vs[h(k + q)] if 0 <= h(k + q) < nv else None for q in range(3))
+                    k += step
+                    if a is None or b is None or c is None:
+                        continue
+                    nx = (b[1] - a[1]) * (c[2] - b[2]) - (b[2] - a[2]) * (c[1] - b[1])
+                    ny = (b[2] - a[2]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[2] - b[2])
+                    nz = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+                    ln = math.sqrt(nx * nx + ny * ny + nz * nz)
+                    if ln > 1e-6:
+                        out.append(((a, b, c), (nx / ln, ny / ln, nz / ln)))
+        except (OSError, ValueError, IndexError):
+            continue
+    return out
 
 
 _CACHE = {}
