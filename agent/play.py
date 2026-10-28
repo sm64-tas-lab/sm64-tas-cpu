@@ -12,6 +12,7 @@ A command is a tool and its arguments, by position for the common ones or as key
     path -5026 -288              (the turns around the walls, nothing played)
 Lines starting with # are skipped. Each answer is one line of JSON.
 """
+import io
 import json
 import os
 import shlex
@@ -53,12 +54,14 @@ def parse(line):
 def main(argv):
     full = '--full' in argv
     argv = [a for a in argv if a != '--full']
-    lines = open(argv[0], encoding='utf-8').read().splitlines() if argv else sys.stdin
+    # (utf-8-sig: PowerShell's utf8 adds a BOM; a pipe is read as UTF-8 too, not the console's code page)
+    lines = (open(argv[0], encoding='utf-8-sig').read().splitlines() if argv else
+             io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8-sig'))
     play = S.Play()
     out = sys.stdout
     sys.stdout = sys.stderr                     # (the engine's prints apart from the answers)
     for line in lines:
-        line = line.strip()
+        line = line.strip().lstrip('﻿')       # (a BOM piped in from PowerShell)
         if not line or line.startswith('#'):
             continue
         try:
