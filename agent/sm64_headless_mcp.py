@@ -495,9 +495,18 @@ class Play:
         import warps
         m = g.mario()
         flt = str(a.get('to') or '').lower()
-        ws = [w for w in warps.warps(g) if not flt or flt in w['to'].lower()]
-        return {'here': warps.level_name(m['level'], m['area']), 'warps': ws[:int(a.get('limit', 30))],
-                'hint': 'goto a warp\'s x, z (a door: walk into it; a painting: goto in front of it, then jump into it)'}
+        ws = [w for w in warps.warps(g) if not flt or flt in w['to'].lower()][:int(a.get('limit', 30))]
+        for w in ws:
+            if w['kind'] == 'painting':
+                f = self._front(w)
+                if f:
+                    w['front'] = {'x': round(f[0]), 'z': round(f[1])}
+                w['how'] = ('goto its front, then jump toward the painting (walk to its x, z with buttons A for ~12 '
+                            'frames): its warp is behind a 100-unit lip at its foot')
+            else:
+                w['how'] = 'walk into it (a door opens as Mario walks in)'
+        return {'here': warps.level_name(m['level'], m['area']), 'warps': ws,
+                'hint': 'after a painting: the star select and the course text, close_dialog until state has no blocked'}
 
     def _front(self, w, r=450.0):
         """a floor in front of a painting, at its height, on the room's side (a cell there and one further out)"""
@@ -513,74 +522,6 @@ class Play:
                 if best is None or d < best[0]:
                     best = (d, pts[0])
         return best[1] if best else None
-
-    def _settle(self, where0, maxf=900):
-        """after a warp: the fade, the star select and the course's opening text passed (A one frame out of two
-        while the game holds), until Mario moves freely in the new place -> the frames played"""
-        import hlx
-        g, n = self.g, 0
-        while n < maxf:
-            m = g.mario()
-            moved = (m['level'], m['area']) != where0
-            free = (g.read('sCurrPlayMode', 'i') == 0 and not hlx.blocked(g) and (m['action'] & 0x1C0) in (0, 0x40)
-                    and 'SPAWN' not in self.M.NAME.get(m['action'], ''))
-            if moved and free:
-                break
-            g.step((0, 0, 0x80 if (moved and hlx.blocked(g) and n % 2 == 0) else 0, 0))
-            n += 1
-        return n
-
-    def t_enter(self, a):
-        """through a door or into a painting by where it leads (to: part of the destination's name): there by goto
-        (around the walls), then a jump into the painting / a walk into the door, and on until Mario moves in the new
-        place (the star select and opening text passed)"""
-        g = self.need()
-        import warps
-        flt = str(a.get('to') or '').lower()
-        ws = [w for w in warps.warps(g) if flt in w['to'].lower()]
-        if not ws:
-            here = sorted({w['to'] for w in warps.warps(g)})
-            return {'entered': False, 'why': 'no door or painting here leads to %s' % a.get('to'),
-                    'hint': 'from here: %s' % (', '.join(here) or 'nothing (another room or floor first?)')}
-        w = ws[0]
-        n0, where0, legs = len(g.history), (g.mario()['level'], g.mario()['area']), []
-        if w['kind'] == 'painting':
-            front = self._front(w)
-            if front is None:
-                return {'entered': False, 'why': 'no floor found in front of the painting', 'warp': w}
-            r = self.t_goto({'x': front[0], 'z': front[1], 'stop': 60})
-            legs += r.get('legs', [])
-            if not r['reached']:
-                return {'entered': False, 'why': 'could not get in front of the painting: ' + r['why'], 'legs': legs,
-                        'warp': w, 'mario': self.state()}
-            s0, done = g.save(), False
-            for run_up in (0, 8, 16):          # (a jump at once, or after a few frames' run toward it)
-                g.load(s0)
-                del g.history[len(g.history):]
-                yaw = self.aim({'x': w['x'], 'z': w['z']})
-                for f in range(run_up + 70):
-                    self.run.press(yaw, 0x80 if run_up <= f < run_up + 12 else 0, 32.0)
-                    if self.M.NAME.get(g.mario()['action'], '') == 'DISAPPEARED' or (
-                            g.mario()['level'], g.mario()['area']) != where0:
-                        done = True
-                        break
-                if done:
-                    legs.append('jumped into the painting' + (' after %d frames of run-up' % run_up if run_up else ''))
-                    break
-            if not done:
-                g.load(s0)
-                return {'entered': False, 'why': 'the jump did not reach the painting', 'legs': legs, 'warp': w,
-                        'mario': self.state()}
-        else:
-            r = self.t_goto({'x': w['x'], 'z': w['z'], 'stop': 20, 'style': 'walk'})
-            legs += r.get('legs', [])
-            self._through_door()
-        self._settle(where0)
-        self._push('enter')
-        m = g.mario()
-        ok = (m['level'], m['area']) != where0
-        return {'entered': ok, 'to': w['to'], 'frames': len(g.history) - n0, 'legs': legs, 'mario': self.state(),
-                **({} if ok else {'why': 'Mario is still here (a locked door? state says why)'})}
 
     def t_collect(self, a):
         """go and take an object (part of its behaviour name; near_x / near_z: the one nearest that point); then on,
@@ -644,20 +585,31 @@ class Play:
         return {'dy': round(dy), 'dist': round(d), 'hint': hint}
 
     def t_close_dialog(self, a):
+        """while the game holds (a text box, a door, a warp's fade, the star select, a course's opening): A one frame
+        out of two where A is read (a text box, a menu), neutral otherwise; it stops the frame Mario moves freely
+        (no A pressed then: it would jump), and plays nothing when nothing holds the game"""
         g = self.need()
         import hlx
-        n = len(g.history)
-        if self._in_door():                 # (no text box will come: A pressed on and on would only waste frames)
-            self._through_door()
-        else:
-            hlx.close_dialog(g, maxf=int(a.get('frames', 400)))
-        for _ in range(120):                # (the text box gone, Mario still ends his reading animation: neutral, no jump)
-            if not hlx.blocked(g):
+        n, maxf = len(g.history), int(a.get('frames', 900))
+        for k in range(maxf):
+            m = g.mario()
+            name = self.M.NAME.get(m['action'], '')
+            menu = g.read('gDialogID', 'H') != 0xFFFF or g.read('sCurrPlayMode', 'i') != 0
+            if not (menu or hlx.blocked(g) or 'SPAWN' in name):
                 break
-            g.step((0, 0, 0, 0))
-        self._push('close_dialog')
+            mode = g.read('sCurrPlayMode', 'i')
+            # (a text read: the game frozen or Mario reading; the star select: the level changing. A text whose id
+            # stays a few frames after it closed, Mario free again, takes no A: it would be a jump)
+            reads_a = (g.read('gDialogID', 'H') != 0xFFFF and (mode != 0 or 'READING' in name)) or mode == 4
+            press = reads_a and not self._in_door() and k % 2 == 0
+            g.step((0, 0, 0x80 if press else 0, 0))
+        played = len(g.history) - n
+        if played:
+            self._push('close_dialog')
         out = self.state()
-        out['frames_played'] = len(g.history) - n
+        out['frames_played'] = played
+        if not played:
+            out['note'] = 'nothing held the game: no frame played'
         return out
 
     def t_checkpoint(self, a):
@@ -757,9 +709,6 @@ TOOLS_SPEC = [
                      "'blocked' when one holds the game.", {'frames': 'number'}, []),
     ('warps', "Where the doors, pipes and paintings of this area lead (their x, y, z and destination level; to: "
               "filter by the destination's name, e.g. 'bob-omb').", {'to': 'string', 'limit': 'number'}, []),
-    ('enter', "Go through a door or into a painting by where it leads (to: part of the destination's name, e.g. "
-              "'bob-omb', 'whomp', 'upper floors'): goto there around the walls, jump into the painting, pass the star "
-              "select and opening text; entered=true once Mario moves in the new level.", {'to': 'string'}, ['to']),
     ('checkpoint', 'Remember the run so far under a name.', {'name': 'string'}, []),
     ('restore', 'Go back to a checkpoint.', {'name': 'string'}, []),
     ('undo', 'Take back the last n calls that played frames.', {'n': 'number'}, []),
@@ -779,11 +728,10 @@ SIMPLE = {
     'collect': "Take an object: name='coin', 'RedCoin', 'Star'. collected=true when taken.",
     'close_dialog': 'Close a text box when state says blocked.',
     'warps': "Where the doors and paintings here lead (their destination levels).",
-    'enter': "Go into a level by name: to='bob-omb'. Walks there, jumps in the painting.",
     'undo': 'Take back the last action.',
     'export': 'Save the run as a .m64 movie: path.',
 }
-KEEP = ('reached', 'collected', 'entered', 'to', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+KEEP = ('reached', 'collected', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
         'error', 'here', 'warps', 'run_frames', 'note')
 MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
          'level_name')
