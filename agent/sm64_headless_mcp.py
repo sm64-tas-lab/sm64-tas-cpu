@@ -374,7 +374,23 @@ class Play:
                 m = g.mario()
                 res.append((w != 'arrived', len(g.history), math.hypot(tx - m['pos_x'], tz - m['pos_z']), kind, w, lg,
                             g.save()))
-            res.sort(key=lambda r: (r[0], r[1] if not r[0] else r[2]))
+            secs = float(a.get('search', 4))
+            if style == 'auto' and secs > 0:
+                import tas_route
+                g.load(s0)
+                q = tas_route.race(g, self.run, tas_route.Goal(tx, tz, stop=stop, ground=True), seconds=secs,
+                                   blocked=lambda g_: __import__('hlx').blocked(g_),
+                                   wet=lambda g_: self.swimmer().in_water())
+                if q['found']:
+                    g.load(s0)
+                    for f in q['inputs']:
+                        g.step(tuple(f))
+                    m = g.mario()
+                    res.append((False, len(g.history), math.hypot(tx - m['pos_x'], tz - m['pos_z']), 'tas',
+                                'arrived', list(legs) + ['tas: ' + ' > '.join(q['moves'])], g.save()))
+            # not there: the least frames + distance left at a TAS speed (a dialog that stops every try is met
+            # sooner by the faster one)
+            res.sort(key=lambda r: (r[0], r[1] if not r[0] else r[1] + r[2] / 48.0))
             why, legs = res[0][4], res[0][5]
             g.load(res[0][6])
             if len(res) > 1:
@@ -542,9 +558,9 @@ TOOLS_SPEC = [
       'frames': 'number', 'buttons': 'array', 'k': 'number', 'params': 'object', 'commit': 'boolean'}, []),
     ('goto', 'To (x, z): style auto (default: chained long jumps when far, running when near, swimming once in the '
              'water), walk, longjump or swim; y: a depth for the swim; enemies avoided; reached=true when it arrived '
-             'within stop units; legs says what it did.',
-     {'x': 'number', 'z': 'number', 'y': 'number', 'style': 'string', 'stop': 'number', 'frames': 'number'},
-     ['x', 'z']),
+             'within stop units; legs says what it did. auto also searches the TAS moves for search seconds (default 4).',
+     {'x': 'number', 'z': 'number', 'y': 'number', 'style': 'string', 'stop': 'number', 'frames': 'number',
+      'search': 'number'}, ['x', 'z']),
     ('swim', 'In the water: swim to (x, z) (y: a depth; else level) with the fastest strokes (the swim strength built '
              'up stroke after stroke to the cap of 28 u/f), steered every frame, over underwater walls; out by a '
              'water jump when the target is above the water, exit=true, or the shore blocks Mario at the surface.',
@@ -565,17 +581,49 @@ TOOLS_SPEC = [
 ]
 
 
-def tool_list():
-    return [{'name': n, 'description': d,
+# --simple: the few tools a small model can drive, short words, short answers; goto / collect do the TAS work inside
+SIMPLE = {
+    'start': 'Start the game: Mario in the castle grounds. Call once.',
+    'state': 'Where Mario is: x, y, z, action, coins, stars, frames.',
+    'scan': "Find objects by name: filter='coin', 'star', 'door'. Gives their x, y, z.",
+    'goto': 'Go to x, z the fastest way (long jumps, swimming). reached=true when there.',
+    'collect': "Take an object: name='coin', 'RedCoin', 'Star'. collected=true when taken.",
+    'close_dialog': 'Close a text box when state says blocked.',
+    'undo': 'Take back the last action.',
+    'export': 'Save the run as a .m64 movie: path.',
+}
+KEEP = ('reached', 'collected', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+        'error')
+MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'stars', 'frames', 'blocked', 'in_water', 'level')
+
+
+def compact(r):
+    """a result cut to what a small model needs"""
+    if not isinstance(r, dict):
+        return r
+    if 'pos_x' in r:
+        return {k: (round(v) if isinstance(v, float) else v) for k, v in r.items() if k in MARIO}
+    out = {k: v for k, v in r.items() if k in KEEP}
+    if 'objects' in out:
+        out['objects'] = [{k: o[k] for k in ('name', 'x', 'y', 'z', 'dist')} for o in out['objects'][:10]]
+    if isinstance(r.get('mario'), dict):
+        out['mario'] = compact(r['mario'])
+    return out
+
+
+def tool_list(simple=False):
+    return [{'name': n, 'description': SIMPLE[n] if simple else d,
              'inputSchema': {'type': 'object', 'required': req,
                              'properties': {k: ({'type': t, 'items': {}} if t == 'array' else
                                                 {'type': t, 'additionalProperties': True} if t == 'object' else
                                                 {'type': t})
-                                            for k, t in props.items()}}}
-            for n, d, props, req in TOOLS_SPEC]
+                                            for k, t in props.items()
+                                            if not simple or k in ('x', 'z', 'name', 'filter', 'path', 'near_x',
+                                                                   'near_z', 'st', 'n')}}}
+            for n, d, props, req in TOOLS_SPEC if not simple or n in SIMPLE]
 
 
-def serve():
+def serve(simple=False):
     play = Play()
     out = sys.stdout
     sys.stdout = sys.stderr                             # (the engine's prints must never reach the protocol)
@@ -594,11 +642,13 @@ def serve():
             res = {'protocolVersion': prm.get('protocolVersion', '2024-11-05'), 'capabilities': {'tools': {}},
                    'serverInfo': {'name': 'sm64-headless', 'version': '1'}}
         elif meth == 'tools/list':
-            res = {'tools': tool_list()}
+            res = {'tools': tool_list(simple)}
         elif meth == 'tools/call':
             name, args = prm.get('name'), prm.get('arguments') or {}
             try:
                 r = getattr(play, 't_' + name)(args)
+                if simple:
+                    r = compact(r)
                 res = {'content': [{'type': 'text', 'text': json.dumps(r, default=str)}]}
             except Exception as e:
                 res = {'content': [{'type': 'text', 'text': 'error: %s' % e}], 'isError': True}
@@ -641,4 +691,4 @@ if __name__ == '__main__':
     if len(sys.argv) >= 2 and sys.argv[1] == '--demo':
         demo(sys.argv[2] if len(sys.argv) > 2 else None)
     else:
-        serve()
+        serve(simple='--simple' in sys.argv)
