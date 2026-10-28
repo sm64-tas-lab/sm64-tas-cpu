@@ -44,6 +44,27 @@ WHY = {'arrive': 'arrived', 'bloque': 'a dialog or a cutscene holds the game (cl
        'niveau': 'the level changed', 'max': 'max'}
 
 
+INTERACT_NAMES = ['hoot', 'grabbable', 'door', 'damage', 'coin', 'cap', 'pole', 'koopa', 'unknown_08', 'breakable',
+                  'strong_wind', 'warp_door', 'star_or_key', 'warp', 'cannon_base', 'bounce_top', 'water_ring', 'bully',
+                  'flame', 'koopa_shell', 'bounce_top2', 'mr_blizzard', 'hit_from_below', 'text', 'tornado',
+                  'whirlpool', 'clam_or_bubba', 'bbh_entrance', 'snufit_bullet', 'shock', 'igloo_barrier', 'unknown_31']
+HURTS = {'damage', 'koopa', 'bounce_top', 'bully', 'flame', 'bounce_top2', 'mr_blizzard', 'hit_from_below', 'tornado',
+         'whirlpool', 'clam_or_bubba', 'snufit_bullet', 'shock', 'strong_wind'}
+# (dangers that only get their interaction once they act: Chain Chomp is 0 until it lunges)
+DANGER_BHV = {'bhvChainChomp', 'bhvWaterBomb', 'bhvBobomb', 'bhvBigBully', 'bhvBowlingBall', 'bhvPitBowlingBall',
+              'bhvFlame', 'bhvPiranhaPlant', 'bhvThwomp', 'bhvThwomp2', 'bhvWhomp', 'bhvHeaveHo', 'bhvCirclingAmp',
+              'bhvHomingAmp', 'bhvBigBullyWithMinions', 'bhvSmallBully', 'bhvKingBobomb'}
+
+
+def interaction(g, o):
+    it = g.read(o['addr'] + 216 + 4 * 0x2A, 'I')
+    return [INTERACT_NAMES[b] for b in range(32) if it >> b & 1]
+
+
+def is_danger(g, o):
+    return bool(set(interaction(g, o)) & HURTS) or o['bhv'] in DANGER_BHV
+
+
 def _seg_dist(px, pz, p, q):
     """the distance on the ground (x, z) from a point to a triangle's edge"""
     ex, ez = q[0] - p[0], q[2] - p[2]
@@ -87,6 +108,12 @@ class Play:
         out['action_name'] = self.M.NAME.get(m['action'], hex(m['action']))
         import warps
         out['level_name'] = warps.level_name(m['level'], m['area'])
+        if 'gCurrActNum' in g.syms and m['level'] not in (6, 16, 26):
+            out['act'] = g.read('gCurrActNum', 'h')      # (the star picked at the star select: objects differ by act)
+        if 'CANNON' in out['action_name']:
+            out['cannon'] = ('in a cannon: step with stick_y up / down raises / lowers it and stick_x turns it '
+                             '(a few frames at a time), buttons A fires; try(inputs=[...], land=true) first shows '
+                             'where Mario lands')
         out['face_yaw_deg'] = round((int(m['face_yaw']) & 0xFFFF) * 360.0 / 65536.0, 1)     # (0 = +z, 90 = +x)
         if self.swimmer().in_water():
             out['in_water'] = True
@@ -178,8 +205,10 @@ class Play:
                 continue
             if not flt and d > radius:
                 continue
-            objs.append({'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']), 'z': round(o['pos_z']),
-                         'dist': round(d), 'dy': round(o['pos_y'] - py), 'slot': o['slot']})
+            kind = interaction(g, o)
+            objs.append(dict({'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']), 'z': round(o['pos_z']),
+                              'dist': round(d), 'dy': round(o['pos_y'] - py), 'slot': o['slot']},
+                             **({'kind': kind} if kind else {}), **({'danger': True} if is_danger(g, o) else {})))
         objs.sort(key=lambda o: o['dist'])
         out = {'mario': self.state(), 'objects': objs[:int(a.get('limit', 40))]}
         if a.get('geometry', True):
@@ -276,7 +305,17 @@ class Play:
     def t_try(self, a):
         n0 = len(self.need() and self.stack)
         b = self._snap()
-        r = self.t_move(a) if a.get('name') else self.t_walk(a)
+        raw = a.get('inputs') or a.get('stick_x') is not None or a.get('stick_y') is not None
+        r = self.t_move(a) if a.get('name') else (self.t_step(a) if raw else self.t_walk(a))
+        if a.get('land'):                   # (on until Mario stands again: where a shot, a jump, a fall ends)
+            g = self.g
+            for _ in range(int(a.get('land_frames', 600))):
+                m = g.mario()
+                if not m['action'] & 0x800 and 'CANNON' not in self.M.NAME.get(m['action'], ''):
+                    break
+                g.step((0, 0, 0, 0))
+            r = self.state()
+            r['landed'] = {k: r[k] for k in ('pos_x', 'pos_y', 'pos_z', 'action_name')}
         for k, v in self._effects(b).items():     # (what it would take or cost, said before it is taken back)
             r.setdefault(k, v)
         self._back_to(n0)
@@ -493,6 +532,19 @@ class Play:
         xs, zs = [t[1] for t in last], [t[2] for t in last]
         return max(xs) - min(xs) < moved and max(zs) - min(zs) < moved
 
+    def _dangers(self, pts, r=350.0):
+        """the objects that hurt Mario within r units of the way (its straight stretches)"""
+        g = self.g
+        out = []
+        for o in g.objects():
+            if o['bhv'] == 'bhvMario' or not is_danger(g, o):
+                continue
+            d = min((_seg_dist(o['pos_x'], o['pos_z'], a, b) for a, b in zip(pts, pts[1:])), default=1e9)
+            if d < r:
+                out.append({'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']), 'z': round(o['pos_z']),
+                            'from_way': round(d)})
+        return sorted(out, key=lambda d: d['from_way'])[:6]
+
     def _walk_ok(self, pts):
         """the turns walked from here as goto walks them, then all taken back -> (ok, (from, to, where it failed))"""
         import hlx
@@ -602,6 +654,9 @@ class Play:
             out = {'found': False, 'hint': 'no walking path: a jump up, a gap, a locked door, or another floor first '
                                            '(scan the floors around; warps for the doors)'}
             if near:
+                dangers = self._dangers([p0] + [tuple(p) for p in near])
+                if dangers:
+                    out['dangers'] = dangers
                 q = near[-1]
                 out['nearest'] = {'turns': [{'x': p[0], 'y': p[1], 'z': p[2]} for p in near],
                                   'left': round(math.hypot(tx - q[0], tz - q[2])),
@@ -609,6 +664,8 @@ class Play:
                 out['hint'] = ('no walking path all the way: nearest.turns go to the reachable floor nearest the target, '
                                '%d units from it and %d below it; the rest is a jump, a climb or another way'
                                % (out['nearest']['left'], out['nearest']['below']))
+                if dangers:
+                    out['hint'] += '; dangers near the way: %s' % ', '.join(sorted({d['name'] for d in dangers}))
             return out
         if checked is None and pts:
             checked = self._walk_ok(pts)[0]
@@ -622,6 +679,11 @@ class Play:
             out['hint'] = ('the walk ends on the floor under the target, %d units below it (a floating coin, a '
                            'platform): the last part is yours, a jump, a climb or another way up' % above)
         out['checked'] = bool(checked)      # (walked and taken back: this path is one Mario really walks)
+        dangers = self._dangers([p0] + [tuple(q) for q in pts])
+        if dangers:
+            out['dangers'] = dangers
+            out['hint'] += ('; dangers near the way (they hurt Mario: hurt / died in the answers): %s'
+                            % ', '.join(sorted({d['name'] for d in dangers})))
         if not checked:
             out['hint'] += '; not all of it could be checked by walking it (a slope, an object): watch goto\'s why'
         if any(t.get('moving') for t in out['turns']):
@@ -830,9 +892,12 @@ TOOLS_SPEC = [
       'keep_failed': 'boolean'}, ['name']),
     ('moves', "Every move: what it does (doc), its frame-perfect parameters with their defaults (params), what it "
               "needs to start (require: fv_min = the forward speed).", {}, []),
-    ('try', 'A walk or a move (same arguments) played and taken back: what it would give.',
-     {'name': 'string', 'x': 'number', 'z': 'number', 'yaw_deg': 'number', 'frames': 'number', 'buttons': 'array',
-      'mag': 'number', 'k': 'number', 'params': 'object'}, []),
+    ('try', 'A walk, a move or raw inputs (the same arguments as walk / move / step) played and taken back: what '
+            'it would give (took, hurt...); land=true plays on until Mario stands again and says where (a shot from '
+            'a cannon, a jump, a fall).',
+     {'name': 'string', 'x': 'number', 'z': 'number', 'yaw_deg': 'number', 'frames': 'number', 'params': 'object',
+      'buttons': 'array', 'mag': 'number', 'k': 'number', 'stick_x': 'number', 'stick_y': 'number', 'inputs': 'array',
+      'land': 'boolean'}, []),
     ('best', 'A move (name) or a walk (frames) tried at many facings at once (spread +- degrees around (x, z) or '
              'yaw_deg, every step degrees): the 5 best by the distance left to (x, z), else by speed; commit=true '
              'keeps the best. No emulator: dozens of tries take a fraction of a second.',
@@ -881,9 +946,9 @@ SIMPLE = {
     'undo': 'Take back the last action.',
     'export': 'Save the run as a .m64 movie: path.',
 }
-KEEP = ('reached', 'collected', 'checked', 'took', 'hurt', 'died', 'left_level', 'blocked', 'nearest', 'floor_under', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+KEEP = ('reached', 'collected', 'checked', 'dangers', 'landed', 'took', 'hurt', 'died', 'left_level', 'blocked', 'nearest', 'floor_under', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
         'error', 'here', 'warps', 'run_frames', 'note')
-MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'red_coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
+MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'act', 'cannon', 'coins', 'red_coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
          'level_name')
 
 
@@ -895,7 +960,8 @@ def compact(r):
         return {k: (round(v) if isinstance(v, float) else v) for k, v in r.items() if k in MARIO or k in KEEP}
     out = {k: v for k, v in r.items() if k in KEEP}
     if 'objects' in out:
-        out['objects'] = [{k: o[k] for k in ('name', 'x', 'y', 'z', 'dist')} for o in out['objects'][:10]]
+        out['objects'] = [{k: o[k] for k in ('name', 'x', 'y', 'z', 'dist', 'kind', 'danger') if k in o}
+                          for o in out['objects'][:10]]
     if isinstance(r.get('mario'), dict):
         out['mario'] = compact(r['mario'])
     return out
