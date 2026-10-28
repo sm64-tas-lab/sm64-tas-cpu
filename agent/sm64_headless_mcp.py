@@ -366,8 +366,13 @@ class Play:
         elif wet():
             why = 'in the water: use style swim (or swim())'
         elif style == 'longjump':
+            m0 = g.mario()
+            d0 = math.hypot(tx - m0['pos_x'], tz - m0['pos_z'])
             _, why = hlx.go_lj(g, tx, tz, stop=max(stop, 80.0), maxf=int(a.get('frames', 400)), done=lambda g_: wet())
-            why = 'in the water' if wet() else WHY.get(why, why)
+            if why == 'max':                # (as walking: held in place, or still on the way when the frames ran out)
+                m1 = g.mario()
+                why = 'stuck' if d0 - math.hypot(tx - m1['pos_x'], tz - m1['pos_z']) < 150.0 else 'frames'
+            why = 'in the water' if wet() else ('died' if self._dead() else WHY.get(why, why))
         else:
             self._land(tx, tz)
             left, why, trail = int(a.get('frames', 600)), 'max', []
