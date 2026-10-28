@@ -44,6 +44,10 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   .hls from power-on, `start(power_on=true)` the console just switched on; `version` us / jp.
 - Perceive before acting: `state()`; `scan(radius)` objects by behaviour name (`bhvRedCoin`, `bhvStar`...), floors
   by height, walls; `scan(filter="coin")` every match in the level.
+  Each object says its `kind` (what it is to Mario: `coin`, `text` (read it), `pole`, `grabbable`, `damage`,
+  `bounce_top` (an enemy you stomp)...) and `danger: true` when it hurts; `path` lists the `dangers` near the way.
+  `state().act` is the act picked at the star select (a course's objects differ by act: closed cannons, missing NPCs).
+  In a cannon `state().cannon` says how to aim; `try(inputs=[...], land=true)` shows where a shot or a jump lands.
 - The tools help, you play: they tell you what is there and what went wrong, and do one thing each; the route,
   the moves and the choices are yours.
 - Act: `goto(x, z, style)` goes straight there the way you choose (`walk` = running, `longjump`, `swim`) and stops

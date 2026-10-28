@@ -76,6 +76,13 @@ def coins(P):
     post = P.t_path({'x': 250, 'z': 1920, 'y': 1000})
     check('the coin on the post: the nearest reachable point is given', 'nearest' in post,
           (post.get('nearest') or {}).get('left'))
+    sc = P.call('scan', {'radius': 9000, 'limit': 200})
+    bad = sorted({o['name'] for o in sc['objects'] if o.get('danger')})
+    check('scan marks the dangers (Chain Chomp, a Goomba), not the Bob-omb Buddy',
+          'bhvChainChomp' in bad and 'bhvBobombBuddy' not in bad, bad)
+    check('path to the post names Chain Chomp among the dangers on the way',
+          any(d['name'] == 'bhvChainChomp' for d in post.get('dangers', [])))
+    check('state says the act', P.call('state', {}).get('act') == 1)
     plat = P.call('path', {'x': 1600, 'z': 4440, 'y': 980})
     check('the checkerboard platform: path marks the turn on it as moving',
           any(t.get('moving') for t in plat.get('turns', [])))
