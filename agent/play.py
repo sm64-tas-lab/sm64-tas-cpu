@@ -9,7 +9,7 @@ A command is a tool and its arguments, by position for the common ones or as key
     scan star                    swim 3000 4000 -600          move lj_chain yaw_deg=90 params={"cycles":2}
     state                        close_dialog                 export run.m64
     warps                        (where the doors and paintings lead)
-    enter bob-omb                (into that painting / through that door)
+    path -5026 -288              (the turns around the walls, nothing played)
 Lines starting with # are skipped. Each answer is one line of JSON.
 """
 import json
@@ -23,14 +23,17 @@ import sm64_headless_mcp as S
 POSITIONAL = {'goto': ('x', 'z', 'y'), 'swim': ('x', 'z', 'y'), 'collect': ('name', 'near_x', 'near_z'),
               'scan': ('filter',), 'move': ('name', 'x', 'z'), 'walk': ('x', 'z', 'frames'), 'export': ('path',),
               'snapshot': ('path',), 'start': ('st',), 'undo': ('n',), 'checkpoint': ('name',), 'restore': ('name',),
-              'step': ('frames',), 'warps': ('to',), 'enter': ('to',)}
+              'step': ('frames',), 'warps': ('to',), 'path': ('x', 'z', 'y')}
 
 
 def value(v):
     try:
         return json.loads(v)
     except ValueError:
-        return v
+        pass
+    if v.startswith('[') and v.endswith(']'):           # ([A,B]: the shell took the quotes away)
+        return [w.strip().strip('"').strip("'") for w in v[1:-1].split(',') if w.strip()]
+    return v
 
 
 def parse(line):

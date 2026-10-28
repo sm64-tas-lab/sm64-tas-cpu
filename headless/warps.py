@@ -81,8 +81,7 @@ def warps(g, mario=None):
                 r['dist'] = round(math.hypot(r['x'] - px, r['z'] - pz))
                 continue
             out.append(dict(w, kind='painting', x=round(x), y=round(y), z=round(z),
-                            dist=round(math.hypot(x - px, z - pz)), _pts=[(x, y, z)],
-                            how='jump into it (its warp floor is in front of the painting, at its foot)'))
+                            dist=round(math.hypot(x - px, z - pz)), _pts=[(x, y, z)]))
     for r in out:
         r.pop('_pts', None)
     out.sort(key=lambda r: r['dist'])
