@@ -44,19 +44,70 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   .hls from power-on, `start(power_on=true)` the console just switched on; `version` us / jp.
 - Perceive before acting: `state()`; `scan(radius)` objects by behaviour name (`bhvRedCoin`, `bhvStar`...), floors
   by height, walls; `scan(filter="coin")` every match in the level.
-- Act: `goto(x, z, style="walk" | "longjump")`, `collect(name="RedCoin")` (trust `collected`), `move(name, x, z)`
-  (`moves()` lists them; a refused move comes back with a `warning`: read it and `undo`), `walk`, `step`.
+- Act: `goto(x, z)` (style `auto`: it races chained long jumps against running from where Mario is and keeps the
+  faster, and swims once in the water; `legs` says what it did), `collect(name="RedCoin")` (trust `collected`; it
+  swims to an underwater object too), `move(name, x, z, params)`, `swim(x, z, y)`, `walk`, `step`.
+  A move the game refuses is taken back by itself (`kept=false`) and `warning` says why (too slow, wrong action).
   When `state()` says `blocked` (a sign, a dialog, a cutscene), call `close_dialog`. A failed `collect` returns
   `dy` / `dist` / `hint`: an object above Mario needs its platform reached first (scan floors, jump onto it).
+- Units: positions in game units (Mario is about 160 tall; y is up), speeds in units a frame, 30 frames a second.
+  Facings in degrees for the tools: `yaw_deg` 0 = +z, 90 = +x, 180 = -z, 270 = -x (`state().face_yaw_deg`).
 - Use the speed: `try(...)` plays and takes back; `best(name or frames, x, z, spread, step, commit=true)` tries a
   move at dozens of facings in a fraction of a second and keeps the best: prefer it to guessing an angle.
   `checkpoint(name)` / `restore(name)` / `undo(n)`.
 - Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one).
 
+## Any model, any client
+
+- A small or local model: register the server with `--simple`
+  (`python agent/sm64_headless_mcp.py --simple`): 8 tools (start, state, scan, goto, collect, close_dialog, undo,
+  export), short descriptions, short answers. `goto` and `collect` do the TAS work inside (they race long jumps,
+  running and a search over the TAS moves, and keep the fastest), so calling them is enough.
+- No MCP at all: `python agent/play.py run.txt` plays a file of commands, one a line (`start`, `scan door`,
+  `goto 0 1800`, `close_dialog`, `collect RedCoin`, `export run.m64`), and prints one JSON answer a line;
+  `python agent/play.py` reads them from the input. `--full` gives every tool.
+
+## Play like a TASer, not like a walk
+
+A TAS never just runs: it chains the moves that keep or gain speed, and every frame counts.
+- `goto` (style auto) already tries a search over these moves (`search` seconds, default 4; 0 turns it off)
+  and keeps it when it arrives sooner: `legs` names the moves (`tas: run 8 > lj_chain x2`).
+- On the ground, running caps at 32 u/f. To cover distance, chain moves: `lj_chain` (long jumps, up to 48 u/f,
+  `params={"cycles": N}`), `dive_rollout` (needs a speed of 29+: run first), `slide_kick` / `slidekick_chain`,
+  `triple_jump` for height and distance. `goto` (auto) already races long jumps against running; for a precise
+  route, play the moves yourself.
+- Turning: `side_flip` reverses at speed, `arc_turn` turns without losing speed; a full stop and `turnaround`
+  costs frames.
+- Height: `triple_jump`, `backflip`, `wall_kick` (needs a wall: it waits for the bonk and kicks off frame perfect),
+  `gp_jump`. Look at `scan()` floors (`dh` = height above Mario) before choosing.
+- Each move's `params` are its frame-perfect settings (a wait before A, a hold, how many cycles): `moves()` gives
+  them with their defaults. Use `best(name, x, z, spread, step)` to find the facing, and `try` to compare two
+  ideas before you `commit`.
+- Water: `swim(x, z, y)` swims as fast as the game allows: one A down at the right frame of each stroke builds the
+  swim strength up to the cap of 28 u/f (mashing A is slower: a new press restarts the stroke at the lowest
+  strength). The stick's x turns Mario, its y is the pitch (it handles both). Out of the water it does a water jump
+  (62 u/f up) when the target is on land; then `goto` goes on.
+- Compare with the clock: `state().frames` before and after; keep a `checkpoint` before each choice and `restore`
+  the slower one.
+
+The shape of a session (the coordinates are only an example):
+```
+start()                                    -> Mario standing, frames 0
+scan(filter="RedCoin")                     -> bhvRedCoin at (1200, 640, -300), dy 400
+checkpoint("a"); goto(x=900, z=-200)       -> reached, legs ["longjump: arrived", "raced: ..."]
+best(name="triple_jump", x=1200, z=-300, spread=30, step=3, commit=true)
+collect(name="RedCoin", near_x=1200, near_z=-300) -> collected=true
+collect(name="Coin", near_x=3000, near_z=4000)    -> goto swims to it (legs ["...: in the water", "swim: arrived"])
+export(path="run.m64")
+```
+
 ## 3. Checking in the emulator (`sm64`, optional)
 
 `start_mupen(savestate=...)` once, `get_state`, `step_frames`, `save_memstate` / `load_memstate`, `screenshot`,
 `export_run`, then `replay_movie` replays the movie on a fresh Mupen and returns the final state to prove it.
+`swim(x, z, y)` swims there with the same fastest strokes as headless. For a frame-perfect line, plan it headless
+(the moves, `swim`), `export` it, then `play_inputs(m64=..., from_frame=...)` plays its exact frames in Mupen
+(or `inputs=[[x, y, hi, lo], ...]`).
 
 ## When something goes wrong
 
