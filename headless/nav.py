@@ -11,12 +11,13 @@ WALL_LO, WALL_HI = 30.0, 150.0      # (the walls Mario's body meets: from 30 to 
 STEEP_NY = 0.7           # (a floor steeper than this slides Mario down: not walked)
 BAD_FLOORS = {0x01, 0x0A, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27}   # (lava, death plane, quicksand)
 BUCKET = 200.0
+CLEAR, CLEAR_COST = 50.0, 400.0    # (Mario's body: a cell this near a wall costs more, kept for narrow ways)
 
 
 class Nav:
 
     def __init__(self, g):
-        self.layers, self.walls = {}, {}
+        self.layers, self.walls, self._near = {}, {}, {}
         for s in g.surfaces():
             v = (s['v1'], s['v2'], s['v3'])
             if s['kind'] == 'floor':
@@ -74,6 +75,25 @@ class Nav:
                         return True
         return False
 
+    def near_wall(self, c, h):
+        """a wall at Mario's body height within CLEAR units of the cell's middle"""
+        key = (c, round(h))
+        if key not in self._near:
+            x, z = (c[0] + 0.5) * CELL, (c[1] + 0.5) * CELL
+            lo, hi, hit = h + WALL_LO, h + WALL_HI, False
+            for bi in range(int(math.floor((x - CLEAR) / BUCKET)), int(math.floor((x + CLEAR) / BUCKET)) + 1):
+                for bj in range(int(math.floor((z - CLEAR) / BUCKET)), int(math.floor((z + CLEAR) / BUCKET)) + 1):
+                    for w in self.walls.get((bi, bj), ()):
+                        if w[3] >= lo and w[2] <= hi and _seg_dist(x, z, w[0], w[1]) < CLEAR:
+                            hit = True
+                            break
+                    if hit:
+                        break
+                if hit:
+                    break
+            self._near[key] = hit
+        return self._near[key]
+
     def _next(self, node):
         i, j, k = node
         h = self.layers[(i, j)][k]
@@ -93,7 +113,10 @@ class Nav:
                         continue             # (no corner cut past a hole)
                     if self.blocked(c0, c1, max(h, h2)):
                         continue
-                    yield (i + di, j + dj, k2), CELL * math.hypot(di, dj) + max(0.0, h2 - h)
+                    cost = CELL * math.hypot(di, dj) + max(0.0, h2 - h)
+                    if self.near_wall((i + di, j + dj), h2):
+                        cost += CLEAR_COST
+                    yield (i + di, j + dj, k2), cost
 
     def path(self, a, b, max_nodes=150000):
         """a -> b ((x, y, z) each; b's y may be None: any floor there) -> the turns [(x, y, z), ..., b] or None"""
@@ -136,7 +159,7 @@ class Nav:
             out.append(cur)
         return [((i + 0.5) * CELL, self.layers[(i, j)][k], (j + 0.5) * CELL) for i, j, k in reversed(out)]
 
-    def clear(self, p, q):
+    def clear(self, p, q, keep_clear=False):
         """a straight walk p -> q: floor all along within a step of the last one, no wall met"""
         d = math.hypot(q[0] - p[0], q[2] - p[2])
         n = max(1, int(d / (CELL * 0.5)))
@@ -153,6 +176,8 @@ class Nav:
             if self.blocked((p[0] + (q[0] - p[0]) * (t - 1) / n, p[2] + (q[2] - p[2]) * (t - 1) / n), (x, z),
                             max(h, h2)):
                 return False
+            if keep_clear and self.near_wall(self.cell(x, z), h2):
+                return False
             h = h2
         return True
 
@@ -161,7 +186,7 @@ class Nav:
         out, i = [], 0
         while i < len(pts) - 1:
             j = len(pts) - 1
-            while j > i + 1 and not self.clear(pts[i], pts[j]):
+            while j > i + 1 and not self.clear(pts[i], pts[j], keep_clear=True):
                 j -= 1
             out.append(pts[j])
             i = j
@@ -174,6 +199,13 @@ def _inside(x, z, v):
     d2 = (x - x3) * (z2 - z3) - (x2 - x3) * (z - z3)
     d3 = (x - x1) * (z3 - z1) - (x3 - x1) * (z - z1)
     return not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0))
+
+
+def _seg_dist(x, z, a, b):
+    ex, ez = b[0] - a[0], b[1] - a[1]
+    n = ex * ex + ez * ez
+    t = 0.0 if n == 0 else max(0.0, min(1.0, ((x - a[0]) * ex + (z - a[1]) * ez) / n))
+    return math.hypot(x - (a[0] + t * ex), z - (a[1] + t * ez))
 
 
 def _cross(p, q, a, b):

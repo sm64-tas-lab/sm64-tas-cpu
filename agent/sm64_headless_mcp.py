@@ -38,6 +38,7 @@ def buttons_of(names):
 
 
 WHY = {'arrive': 'arrived', 'bloque': 'a dialog or a cutscene holds the game (close_dialog)',
+       'stuck': 'stuck (a wall, a slope or a gap holds Mario)', 'frames': 'out of frames (still on the way)',
        'brule': 'burnt (lava or fire)', 'touche': 'hit by an enemy', 'chute': 'fell (out of the level\'s floor)',
        'niveau': 'the level changed', 'max': 'max'}
 
@@ -90,6 +91,8 @@ class Play:
             out['in_water'] = True
             out['water_level'] = self.swimmer().read()['water']
         out['coins'], out['stars'] = g.coins, g.stars
+        if 'gRedCoinsCollected' in g.syms:
+            out['red_coins'] = g.read('gRedCoinsCollected', 'B')    # (taken in this course, of its 8)
         out['health'] = (g.health >> 8) & 0xFF
         out['frames'] = self._frames()
         try:
@@ -366,9 +369,14 @@ class Play:
             why = 'in the water' if wet() else WHY.get(why, why)
         else:
             self._land(tx, tz)
-            left, why = int(a.get('frames', 300)), 'max'
-            while left > 0 and not wet():
-                ins_, why = hlx.go_walk(g, tx, tz, stop=stop, maxf=min(10, left))
+            left, why, trail = int(a.get('frames', 600)), 'max', []
+            while left > 0 and not wet() and not self._dead():
+                m = g.mario()
+                d = math.hypot(tx - m['pos_x'], tz - m['pos_z'])
+                trail.append((len(g.history), m['pos_x'], m['pos_z']))
+                # (near the point the stick eases off: at full speed Mario circles round a point he cannot turn into)
+                mag = 1.0 if d > 300.0 else max(0.25, d / 300.0)
+                ins_, why = hlx.go_walk(g, tx, tz, stop=stop, maxf=min(10 if d > 400.0 else 2, left), mag=mag)
                 left -= max(1, len(ins_))
                 if why == 'bloque' and self._in_door():
                     left -= self._through_door()
@@ -379,18 +387,45 @@ class Play:
                     continue
                 if why != 'max':
                     break
-            why = 'in the water' if wet() else WHY.get(why, why)
+            if why == 'max':
+                why = 'stuck' if self._stuck(trail) else 'frames'
+            why = 'in the water' if wet() else ('died' if self._dead() else WHY.get(why, why))
         legs.append('%s: %s' % (style, why))
         self._push('goto')
         m = g.mario()
         out = {'reached': why == 'arrived', 'why': why, 'frames': len(g.history) - n, 'legs': legs,
                'dist_left': round(math.hypot(tx - m['pos_x'], tz - m['pos_z']), 1), 'mario': self.state()}
-        if why == 'max':
-            out['hint'] = ('not there: something holds Mario on the straight line (a wall, a slope, a gap): path(x, z) '
-                           'gives the turns around the walls; scan shows the walls and floors; a jump may get past')
+        if why == WHY['stuck']:
+            out['hint'] = ('not there: something holds Mario on the straight line (a wall, a slope, a gap, an object): '
+                           'path(x, z) gives the turns around the walls; scan shows the walls and floors; a jump may get '
+                           'past')
+            near = sorted(((math.hypot(o['pos_x'] - m['pos_x'], o['pos_z'] - m['pos_z']), o) for o in g.objects()
+                          if o['bhv'] != 'bhvMario'), key=lambda t: t[0])
+            near = [{'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']), 'z': round(o['pos_z']),
+                     'dist': round(d)} for d, o in near if d < 300.0][:4]
+            if near:
+                out['objects_near'] = near      # (path sees the walls, not the objects: one of these may be in the way)
+        elif why == WHY['frames']:
+            out['hint'] = 'still on the way when its frames ran out: goto again, or give more frames'
+        elif why == 'died':
+            out['hint'] = ('Mario lost his life (a pit, lava, an enemy): restore a checkpoint (or undo) and take '
+                           'another way')
         elif why == 'in the water':
             out['hint'] = 'Mario is in the water: swim(x, z) or goto with style swim'
         return out
+
+    def _dead(self):
+        m = self.g.mario()
+        return 'DEATH' in self.M.NAME.get(m['action'], '') or ((self.g.health >> 8) & 0xFF) == 0
+
+    @staticmethod
+    def _stuck(trail, over=60, moved=60.0):
+        """Mario held in place (or round it) over the last frames, not just short of frames"""
+        if len(trail) < 3 or trail[-1][0] - trail[0][0] < over:
+            return False
+        last = [t for t in trail if t[0] >= trail[-1][0] - over]
+        xs, zs = [t[1] for t in last], [t[2] for t in last]
+        return max(xs) - min(xs) < moved and max(zs) - min(zs) < moved
 
     def t_path(self, a):
         """the walking path from Mario to (x, z) around the walls (nothing is played): its turns, to goto one by one"""
@@ -404,11 +439,22 @@ class Play:
         if nv.clear(p0, (tx, p0[1] if ty is None else ty, tz)):
             return {'found': True, 'straight': True, 'turns': [], 'hint': 'the straight line is open: goto(x, z)'}
         pts = nv.path(p0, (tx, ty, tz))
+        above = None
+        if not pts and ty is not None:
+            pts = nv.path(p0, (tx, None, tz))       # (no floor at the target's height: the floor under it)
+            if pts:
+                above = round(ty - pts[-1][1])
         if not pts:
             return {'found': False, 'hint': 'no walking path: a jump up, a gap, a locked door, or another floor first '
                                              '(scan the floors around; warps for the doors)'}
-        return {'found': True, 'straight': False, 'turns': [{'x': q[0], 'y': q[1], 'z': q[2]} for q in pts],
-                'hint': 'goto each turn in order (the last is the target); doors on the way open as Mario walks in'}
+        out = {'found': True, 'straight': False, 'turns': [{'x': q[0], 'y': q[1], 'z': q[2]} for q in pts],
+               'hint': 'goto each turn in order (the last is the target), stop=120 for the turns on the way (they are '
+                       'only where to pass); doors open as Mario walks in; objects are not in the path (scan them)'}
+        if above is not None:
+            out['above_floor'] = above
+            out['hint'] = ('the walk ends on the floor under the target, %d units below it (a floating coin, a '
+                           'platform): the last part is yours, a jump, a climb or another way up' % above)
+        return out
 
     def t_warps(self, a):
         """where the doors, pipes and paintings of this area lead"""
@@ -451,12 +497,19 @@ class Play:
         g = self.need()
         flt = str(a['name']).lower()
         objs = [o for o in g.objects() if flt in str(o['bhv']).lower() and o['bhv'] != 'bhvMario']
+        exact = [o for o in objs if str(o['bhv']).lower() in (flt, 'bhv' + flt)]
+        objs = exact or objs                # ('RedCoin': the red coins, not the red coin star's marker)
         if not objs:
             return {'collected': False, 'why': 'no object named like %s' % a['name']}
         m = g.mario()
         nx = float(a['near_x']) if a.get('near_x') is not None else m['pos_x']
         nz = float(a['near_z']) if a.get('near_z') is not None else m['pos_z']
         o = min(objs, key=lambda q: math.hypot(q['pos_x'] - nx, q['pos_z'] - nz))
+        off = math.hypot(o['pos_x'] - nx, o['pos_z'] - nz)
+        if a.get('near_x') is not None and off > 300.0:
+            return {'collected': False, 'why': 'no %s near (%.0f, %.0f): the nearest is %.0f units away at (%.0f, %.0f, '
+                                               '%.0f), already taken (state: coins, red_coins) or not there' % (a['name'], nx, nz, off, o['pos_x'],
+                                                                                    o['pos_y'], o['pos_z'])}
         c0, s0 = g.coins, g.stars
 
         def taken():
@@ -643,9 +696,9 @@ SIMPLE = {
     'undo': 'Take back the last action.',
     'export': 'Save the run as a .m64 movie: path.',
 }
-KEEP = ('reached', 'collected', 'found', 'straight', 'turns', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+KEEP = ('reached', 'collected', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
         'error', 'here', 'warps', 'run_frames', 'note')
-MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
+MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'red_coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
          'level_name')
 
 
