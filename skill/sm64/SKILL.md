@@ -44,9 +44,13 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   .hls from power-on, `start(power_on=true)` the console just switched on; `version` us / jp.
 - Perceive before acting: `state()`; `scan(radius)` objects by behaviour name (`bhvRedCoin`, `bhvStar`...), floors
   by height, walls; `scan(filter="coin")` every match in the level.
-- Act: `goto(x, z)` (style `auto`: it races chained long jumps against running from where Mario is and keeps the
-  faster, and swims once in the water; `legs` says what it did), `collect(name="RedCoin")` (trust `collected`; it
-  swims to an underwater object too), `move(name, x, z, params)`, `swim(x, z, y)`, `walk`, `step`.
+- The tools help, you play: they tell you what is there and what went wrong, and do one thing each; the route,
+  the moves and the choices are yours.
+- Act: `goto(x, z, style)` goes straight there the way you choose (`walk` = running, `longjump`, `swim`) and stops
+  on what it meets (`why`: a wall = `max`, a text, the water, the level changed). `path(x, z)` gives the turns
+  around the walls (nothing played): goto them in order. `collect(name="RedCoin", style)` goes straight to the
+  object and says whether it was taken (trust `collected`). `move(name, x, z, params)`, `swim(x, z, y)`, `walk`,
+  `step`.
   A move the game refuses is taken back by itself (`kept=false`) and `warning` says why (too slow, wrong action).
   When `state()` says `blocked` (a sign, a dialog, a cutscene), call `close_dialog`. A failed `collect` returns
   `dy` / `dist` / `hint`: an object above Mario needs its platform reached first (scan floors, jump onto it).
@@ -63,9 +67,8 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   fade, the star select and the course's opening text, and stops the frame Mario can move (it plays nothing when
   nothing holds the game). From the castle grounds: `goto(0, -3155)` (the front door; `close_dialog` for Lakitu's
   text on the way and the hall's text after).
-- `goto` takes the straight line first; stuck on a wall, it takes the walking path around the walls (through open
-  doors, up stairs) and keeps the better arrival (`legs` shows `route: N turns`). No path at all is said in `legs`:
-  a jump, a locked door (star doors need stars) or another way.
+- Inside buildings the straight line often meets a wall: `path(x, z)` first (it goes through open doors and up
+  stairs); no path at all means a jump, a locked door (star doors need stars) or another way.
 - Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one). Started from `start()`
   (no .st), the movie begins at power-on: `frames` counts the boot too, `run_frames` the run, and in Mupen it is
   played from power-on with `play_inputs(m64=...)`.
@@ -73,24 +76,20 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
 ## Any model, any client
 
 - A small or local model: register the server with `--simple`
-  (`python agent/sm64_headless_mcp.py --simple`): 9 tools (start, state, scan, goto, collect, close_dialog, warps,
-  undo, export), short descriptions, short answers. `goto` and `collect` do the TAS work inside (they race long jumps,
-  running and a search over the TAS moves, and keep the fastest), so calling them is enough.
+  (`python agent/sm64_headless_mcp.py --simple`): 10 tools (start, state, scan, goto, path, collect, close_dialog,
+  warps, undo, export), short descriptions, short answers.
 - No MCP at all: `python agent/play.py run.txt` plays a file of commands, one a line (`start`, `scan door`,
-  `goto 0 1800`, `close_dialog`, `warps bob-omb`, `walk -5442 -460 12 buttons=[A]`, `collect RedCoin`,
-  `export run.m64`), and prints one
-  JSON answer a line;
+  `goto 0 1800 style=longjump`, `close_dialog`, `warps bob-omb`, `path -5026 -288`,
+  `walk -5442 -460 12 buttons=[A]`, `collect RedCoin`, `export run.m64`), and prints one JSON answer a line;
   `python agent/play.py` reads them from the input. `--full` gives every tool.
 
 ## Play like a TASer, not like a walk
 
 A TAS never just runs: it chains the moves that keep or gain speed, and every frame counts.
-- `goto` (style auto) already tries a search over these moves (`search` seconds, default 4; 0 turns it off)
-  and keeps it when it arrives sooner: `legs` names the moves (`tas: run 8 > lj_chain x2`).
 - On the ground, running caps at 32 u/f. To cover distance, chain moves: `lj_chain` (long jumps, up to 48 u/f,
   `params={"cycles": N}`), `dive_rollout` (needs a speed of 29+: run first), `slide_kick` / `slidekick_chain`,
-  `triple_jump` for height and distance. `goto` (auto) already races long jumps against running; for a precise
-  route, play the moves yourself.
+  `triple_jump` for height and distance. `goto(style="longjump")` chains long jumps on a straight line; compare
+  it with running (`try`, `checkpoint` / `restore`) and keep the faster.
 - Turning: `side_flip` reverses at speed, `arc_turn` turns without losing speed; a full stop and `turnaround`
   costs frames.
 - Height: `triple_jump`, `backflip`, `wall_kick` (needs a wall: it waits for the bonk and kicks off frame perfect),
@@ -101,7 +100,7 @@ A TAS never just runs: it chains the moves that keep or gain speed, and every fr
 - Water: `swim(x, z, y)` swims as fast as the game allows: one A down at the right frame of each stroke builds the
   swim strength up to the cap of 28 u/f (mashing A is slower: a new press restarts the stroke at the lowest
   strength). The stick's x turns Mario, its y is the pitch (it handles both). Out of the water it does a water jump
-  (62 u/f up) when the target is on land; then `goto` goes on.
+  (62 u/f up) when the target is on land; then go on with `goto`.
 - Compare with the clock: `state().frames` before and after; keep a `checkpoint` before each choice and `restore`
   the slower one.
 
@@ -109,10 +108,10 @@ The shape of a session (the coordinates are only an example):
 ```
 start()                                    -> Mario standing, frames 0
 scan(filter="RedCoin")                     -> bhvRedCoin at (1200, 640, -300), dy 400
-checkpoint("a"); goto(x=900, z=-200)       -> reached, legs ["longjump: arrived", "raced: ..."]
+checkpoint("a"); goto(x=900, z=-200, style="longjump")   -> reached, legs ["longjump: arrived"]
 best(name="triple_jump", x=1200, z=-300, spread=30, step=3, commit=true)
 collect(name="RedCoin", near_x=1200, near_z=-300) -> collected=true
-collect(name="Coin", near_x=3000, near_z=4000)    -> goto swims to it (legs ["...: in the water", "swim: arrived"])
+collect(name="Coin", near_x=3000, near_z=4000)    -> goto why "in the water": swim(x=3000, z=4000, y=...) then collect
 export(path="run.m64")
 ```
 
