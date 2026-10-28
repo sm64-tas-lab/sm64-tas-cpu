@@ -4,7 +4,8 @@
 2. your own ROM: Super Mario 64 US (JP optional) unlocks the game DLLs (*.dll.locked: never shipped in clear);
 3. the decompilation's sources (headers only are read: the object fields), from n64decomp/sm64 (no game assets);
 4. Mupen64-rr-lua (optional: replay / check the movies the AI makes);
-5. the MCP server for the AI: Claude Code (and its skill), Gemini CLI when installed, mcp.json for any other client.
+5. the MCP server for the AI: Claude Code, Gemini CLI when installed, mcp.json for any other client; the skill
+   copied for every client that keeps skills (Claude Code, Strata, gex, Codex, Gemini CLI).
 
     python install.py [--rom-us ROM] [--rom-jp ROM] [--mupen EXE] [--no-register] [--yes]
 """
@@ -98,10 +99,6 @@ def register(python):
         r = subprocess.run([claude, 'mcp', 'add', '--scope', 'user', 'sm64-headless', '--', python, SERVER],
                            capture_output=True, text=True)
         say('  Claude Code: %s' % ('sm64-headless added' if r.returncode == 0 else 'failed: ' + (r.stderr or '')[-200:]))
-        skill = os.path.join(os.path.expanduser('~'), '.claude', 'skills', 'sm64')
-        os.makedirs(skill, exist_ok=True)
-        shutil.copy(os.path.join(ROOT, 'skill', 'sm64', 'SKILL.md'), os.path.join(skill, 'SKILL.md'))
-        say('  Claude Code skill: %s' % skill)
     else:
         say('  Claude Code not found (claude): add it later with: claude mcp add sm64-headless -- "%s" "%s"' % (python, SERVER))
     gem = os.path.join(os.path.expanduser('~'), '.gemini', 'settings.json')
@@ -115,6 +112,31 @@ def register(python):
             os.makedirs(os.path.dirname(gem), exist_ok=True)
             json.dump(s, open(gem, 'w', encoding='utf-8'), indent=2)
             say('  Gemini CLI: sm64-headless added to %s' % gem)
+    skills()
+
+
+# the skill's homes: the client's skills folder when the client is there (its folder exists); a 'live' copy a client
+# keeps of the skills it loaded is refreshed only when it already holds this one
+SKILL_HOMES = [('Claude Code', ('.claude', 'skills'), False), ('Strata', ('.strata', 'data', 'skills'), False),
+               ('Strata (loaded copy)', ('.strata', 'data', 'agent', 'skills-live'), True),
+               ('gex', ('.gex', 'skills'), False), ('Codex', ('.codex', 'skills'), False),
+               ('Gemini CLI', ('.gemini', 'skills'), False)]
+
+
+def skills():
+    """the skill (how to play with these tools) copied, or brought up to date, for every client that has skills"""
+    home = os.path.expanduser('~')
+    src = os.path.join(ROOT, 'skill', 'sm64', 'SKILL.md')
+    for name, parts, live in SKILL_HOMES:
+        base = os.path.join(home, *parts)
+        dst = os.path.join(base, 'sm64')
+        if live and not os.path.isdir(dst):
+            continue
+        if not os.path.isdir(base) and not (name == 'Claude Code' and shutil.which('claude')):
+            continue
+        os.makedirs(dst, exist_ok=True)
+        shutil.copy(src, os.path.join(dst, 'SKILL.md'))
+        say('  %s skill: %s' % (name, dst))
 
 
 def main():
