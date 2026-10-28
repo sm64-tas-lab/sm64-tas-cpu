@@ -57,9 +57,21 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   `checkpoint(name)` / `restore(name)` / `undo(n)`.
 - Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one).
 
+## Any model, any client
+
+- A small or local model: register the server with `--simple`
+  (`python agent/sm64_headless_mcp.py --simple`): 8 tools (start, state, scan, goto, collect, close_dialog, undo,
+  export), short descriptions, short answers. `goto` and `collect` do the TAS work inside (they race long jumps,
+  running and a search over the TAS moves, and keep the fastest), so calling them is enough.
+- No MCP at all: `python agent/play.py run.txt` plays a file of commands, one a line (`start`, `scan door`,
+  `goto 0 1800`, `close_dialog`, `collect RedCoin`, `export run.m64`), and prints one JSON answer a line;
+  `python agent/play.py` reads them from the input. `--full` gives every tool.
+
 ## Play like a TASer, not like a walk
 
 A TAS never just runs: it chains the moves that keep or gain speed, and every frame counts.
+- `goto` (style auto) already tries a search over these moves (`search` seconds, default 4; 0 turns it off)
+  and keeps it when it arrives sooner: `legs` names the moves (`tas: run 8 > lj_chain x2`).
 - On the ground, running caps at 32 u/f. To cover distance, chain moves: `lj_chain` (long jumps, up to 48 u/f,
   `params={"cycles": N}`), `dive_rollout` (needs a speed of 29+: run first), `slide_kick` / `slidekick_chain`,
   `triple_jump` for height and distance. `goto` (auto) already races long jumps against running; for a precise
