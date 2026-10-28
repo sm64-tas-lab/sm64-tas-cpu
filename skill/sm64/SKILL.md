@@ -74,7 +74,9 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   path at all means a jump, a locked door (star doors need stars) or another way.
 - `goto`'s `why`: `arrived`; `stuck` (held in place: a wall, a slope, a gap, an object); `out of frames` (still on
   the way: goto again or more `frames`); `died` (a pit, lava, an enemy: `restore` a checkpoint); a text; the water;
-  the level changed. `state().red_coins` counts the red coins taken in this course (a coin can be taken on the way).
+  the level changed. `goto` / `collect` say `took` when Mario ran into a coin, a red coin or a star on the way
+  (`{"red_coins": 1}`): it counts, do not undo it. `state().red_coins` counts the red coins taken in this course.
+  A red coin star appears only once the 8 red coins are taken (its marker shows where): look for it after that.
 - Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one). Started from `start()`
   (no .st), the movie begins at power-on: `frames` counts the boot too, `run_frames` the run, and in Mupen it is
   played from power-on with `play_inputs(m64=...)`.
