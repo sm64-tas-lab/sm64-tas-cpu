@@ -9,6 +9,10 @@ STEP_UP = 100.0          # (Mario walks up a step this high; higher needs a jump
 DROP = 400.0
 WALL_LO, WALL_HI = 30.0, 150.0      # (the walls Mario's body meets: from 30 to 150 over his feet)
 STEEP_NY = 0.7           # (a floor steeper than this slides Mario down: not walked)
+# walked up only where Mario does not slide back (decomp mario.c mario_floor_is_slope / mario_get_floor_class)
+SLIPPERY = {0x14, 0x2A, 0x35, 0x79}
+VERY_SLIPPERY = {0x13, 0x2E, 0x36, 0x73, 0x74, 0x75, 0x78}
+NOT_SLIPPERY = {0x15, 0x37, 0x7A}
 BAD_FLOORS = {0x01, 0x0A, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27}   # (lava, death plane, quicksand)
 BUCKET = 200.0
 MARIO_R = 40.0           # (Mario's body: a wall nearer than this to his line stops him, crossed or not)
@@ -18,12 +22,12 @@ CLEAR, CLEAR_COST = 50.0, 400.0    # (Mario's body: a cell this near a wall cost
 class Nav:
 
     def __init__(self, g):
-        self.layers, self.walls, self._near = {}, {}, {}
+        self.layers, self.walls, self._near, self.steep = {}, {}, {}, set()
         for s in g.surfaces():
             v = (s['v1'], s['v2'], s['v3'])
             if s['kind'] == 'floor':
                 if s['normal'][1] >= STEEP_NY and s['type'] not in BAD_FLOORS:
-                    self._raster(v, s['normal'], s['origin'])
+                    self._raster(v, s['normal'], s['origin'], s['type'])
             elif s['kind'] == 'wall':
                 self._wall(v)
         for v, n in object_surfaces(g):
@@ -34,7 +38,20 @@ class Nav:
                 self._wall(v)
 
     # ---- building ----------------------------------------------------------------------------------------------
-    def _raster(self, v, n, origin):
+    @staticmethod
+    def _too_steep_up(ny, t):
+        """a floor Mario slides back down when he walks up it (decomp mario.c mario_floor_is_slope and the floor
+        classes of mario_get_floor_class: not slippery floors never slide; measured on Bob-omb Battlefield, a 0.898
+        slippery floor slid him back, a 0.729 not slippery one was walked up)"""
+        if t in NOT_SLIPPERY:
+            return False
+        if t in VERY_SLIPPERY:
+            return ny < 0.97
+        if t in SLIPPERY:
+            return ny < 0.91            # (measured: slid back at 0.898; a long climb at 0.906 slid back too)
+        return ny < 0.7880108
+
+    def _raster(self, v, n, origin, t=0):
         xs, zs = [p[0] for p in v], [p[2] for p in v]
         for i in range(int(math.floor(min(xs) / CELL)), int(math.floor(max(xs) / CELL)) + 1):
             for j in range(int(math.floor(min(zs) / CELL)), int(math.floor(max(zs) / CELL)) + 1):
@@ -46,6 +63,8 @@ class Nav:
                 if not any(abs(h - q) < 20.0 for q in hs):
                     hs.append(h)
                     hs.sort()
+                    if self._too_steep_up(n[1], t):
+                        self.steep.add((i, j, round(h)))
 
     def _wall(self, v):
         pts = [(p[0], p[2]) for p in v]
@@ -116,6 +135,8 @@ class Nav:
                 for k2, h2 in enumerate(hs):
                     if h2 - h > STEP_UP or h - h2 > DROP:
                         continue
+                    if h2 - h > 5.0 and (i + di, j + dj, round(h2)) in self.steep:
+                        continue             # (up a slope Mario slides back down)
                     if di and dj and not (self.layers.get((i + di, j)) and self.layers.get((i, j + dj))):
                         continue             # (no corner cut past a hole)
                     if self.blocked(c0, c1, max(h, h2)):
@@ -125,8 +146,9 @@ class Nav:
                         cost += CLEAR_COST
                     yield (i + di, j + dj, k2), cost
 
-    def path(self, a, b, max_nodes=150000):
-        """a -> b ((x, y, z) each; b's y may be None: any floor there) -> the turns [(x, y, z), ..., b] or None"""
+    def path(self, a, b, max_nodes=150000, nearest=False):
+        """a -> b ((x, y, z) each; b's y may be None: any floor there) -> the turns [(x, y, z), ..., b] or None;
+        nearest=True: no way there, the turns to the reachable floor nearest b instead (the last turn is that floor)"""
         ca, cb = self.cell(a[0], a[2]), self.cell(b[0], b[2])
         ka = self.layer(ca, a[1])
         if ka is None:
@@ -147,16 +169,26 @@ class Nav:
         s = (ca[0], ca[1], ka)
         cost, prev, q, n = {s: 0.0}, {}, [(0.0, s)], 0
         bx, bz = (cb[0] + 0.5) * CELL, (cb[1] + 0.5) * CELL
+        by = b[1] if b[1] is not None else a[1]
+        best = (1e18, s)
         while q and n < max_nodes:
             _, cur = heapq.heappop(q)
             if cur in goal:
                 return self._pull(self._unwind(prev, cur), a, b)
+            if nearest:
+                h = self.layers[(cur[0], cur[1])][cur[2]]
+                d = math.hypot((cur[0] + 0.5) * CELL - bx, (cur[1] + 0.5) * CELL - bz) + abs(h - by)
+                if d < best[0]:
+                    best = (d, cur)
             n += 1
             for nb, c in self._next(cur):
                 nc = cost[cur] + c
                 if nc < cost.get(nb, 1e18):
                     cost[nb], prev[nb] = nc, cur
                     heapq.heappush(q, (nc + math.hypot((nb[0] + 0.5) * CELL - bx, (nb[1] + 0.5) * CELL - bz), nb))
+        if nearest and best[1] != s:
+            pts = self._unwind(prev, best[1])
+            return self._pull(pts, a, pts[-1])
         return None
 
     def _unwind(self, prev, cur):
@@ -176,7 +208,8 @@ class Nav:
             hs = self.layers.get(self.cell(x, z))
             if not hs:
                 return False
-            ok = [y for y in hs if y - h <= STEP_UP and h - y <= DROP]
+            c = self.cell(x, z)
+            ok = [y for y in hs if y - h <= STEP_UP and h - y <= DROP and not (y - h > 5.0 and (c[0], c[1], round(y)) in self.steep)]
             if not ok:
                 return False
             h2 = max(ok)

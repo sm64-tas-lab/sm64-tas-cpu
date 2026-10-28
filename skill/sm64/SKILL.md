@@ -70,10 +70,13 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
 - Inside buildings and on hills the straight line often meets a wall: `path(x, z)` first (it goes through open
   doors and up stairs), then `goto` each turn with `stop=120` (a turn is only where to pass; the last one is the
   target). `path` sees the walls, not the objects: `goto` stuck says `objects_near` (a gate, a cannon). A target
-  above its floor (a floating coin, a ledge) gives `above_floor`: the walk ends under it, the way up is yours. No
-  path at all means a jump, a locked door (star doors need stars) or another way.
-- `goto`'s `why`: `arrived`; `stuck` (held in place: a wall, a slope, a gap, an object); `out of frames` (still on
-  the way: goto again or more `frames`); `died` (a pit, lava, an enemy: `restore` a checkpoint); a text; the water;
+  above its floor (a floating coin, a ledge) gives `above_floor`: the walk ends under it, the way up is yours.
+  `floor_under`: the target stands over a floor no walk reaches (an island: a cannon, a jump from higher). No path
+  at all gives `nearest` (the turns to the reachable floor nearest the target, how far and how far below it is);
+  the rest is a jump, a locked door (star doors need stars) or another way. path refuses slopes Mario would slide
+  back down.
+- `goto`'s `why`: `arrived`; `stuck` (held in place: a wall, a slope, a gap, an object); `slid back` (a slope too
+  steep to walk up); `out of frames` (still on the way: goto again or more `frames`); `died` (a pit, lava, an enemy: `restore` a checkpoint); a text; the water;
   the level changed. `goto` / `collect` say `took` when Mario ran into a coin, a red coin or a star on the way
   (`{"red_coins": 1}`): it counts, do not undo it. `state().red_coins` counts the red coins taken in this course.
   A red coin star appears only once the 8 red coins are taken (its marker shows where): look for it after that.
