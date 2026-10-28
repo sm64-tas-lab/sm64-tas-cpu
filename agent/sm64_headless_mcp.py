@@ -37,6 +37,11 @@ def buttons_of(names):
     return hi, lo
 
 
+WHY = {'arrive': 'arrived', 'bloque': 'a dialog or a cutscene holds the game (close_dialog)',
+       'brule': 'burnt (lava or fire)', 'touche': 'hit by an enemy', 'chute': 'fell (out of the level\'s floor)',
+       'niveau': 'the level changed', 'max': 'max'}
+
+
 def _seg_dist(px, pz, p, q):
     """the distance on the ground (x, z) from a point to a triangle's edge"""
     ex, ez = q[0] - p[0], q[2] - p[2]
@@ -78,6 +83,10 @@ class Play:
                if k in ('pos_x', 'pos_y', 'pos_z', 'forward_vel', 'face_yaw', 'action', 'level', 'area', 'cam_yaw',
                         'vel_y', 'intended_yaw', 'intended_mag')}
         out['action_name'] = self.M.NAME.get(m['action'], hex(m['action']))
+        out['face_yaw_deg'] = round((int(m['face_yaw']) & 0xFFFF) * 360.0 / 65536.0, 1)     # (0 = +z, 90 = +x)
+        if self.swimmer().in_water():
+            out['in_water'] = True
+            out['water_level'] = self.swimmer().read()['water']
         out['coins'], out['stars'] = g.coins, g.stars
         out['health'] = (g.health >> 8) & 0xFF
         out['frames'] = self._frames()
@@ -89,6 +98,12 @@ class Play:
         except Exception:
             pass
         return out
+
+    def swimmer(self):
+        if getattr(self, '_sw', None) is None or self._sw.g is not self.g:
+            import swim
+            self._sw = swim.Swimmer(self.g)
+        return self._sw
 
     def aim(self, a):
         """the world yaw a call aims at: toward (x, z), a yaw in degrees (0 = +z, 90 = +x), or Mario's facing"""
@@ -192,19 +207,51 @@ class Play:
     def t_move(self, a):
         g = self.need()
         name = self.M.resolve(a['name'])
-        a0 = self.M.NAME.get(g.mario()['action'])
-        inp = self.M.run_named(self.run, name, self.aim(a), k=int(a.get('k', 1)))
+        if name not in self.M.SPECS:
+            raise RuntimeError('no move named %s: moves() lists them' % a['name'])
+        spec = self.M.SPECS[name]
+        m0 = g.mario()
+        a0 = self.M.NAME.get(m0['action'], hex(m0['action']))
+        ok, why0 = self.M.in_domain(name, m0['action'], m0['forward_vel'], g)
+        params = dict(a.get('params') or {})
+        bad = [k for k in params if k not in spec.get('params', {})]
+        if bad:
+            raise RuntimeError('%s has no parameter %s (its parameters: %s)'
+                               % (name, ', '.join(bad), spec.get('params') or 'none'))
+        if a.get('k') is not None and not params:
+            key = 'cycles' if 'cycles' in spec.get('params', {}) else 'hold'
+            if key in spec.get('params', {}):
+                params[key] = max(1, int(a['k'])) if key == 'cycles' else max(0, min(20, int(a['k'])))
+        n0 = len(self.stack)
+        inp, status = self.run.run(name, self.aim(a), **params)
         self._push('move ' + name)
         out = self.state()
         out['frames_played'] = len(inp)
-        if len(inp) <= 2:          # (B while walking under speed 29 punches instead of diving: said, never hidden)
-            out['warning'] = ('the move stopped after %d frame(s): from %s the game did not take it (now %s); '
-                              'check its entry (speed, action) or undo' % (len(inp), a0, out['action_name']))
+        if (status in ('fail', 'locked') and len(inp) <= 2) or not inp:
+            why = why0 if not ok else (getattr(self.run, 'why', '') or 'the game did not take it')
+            if a.get('keep_failed'):
+                out['warning'] = '%s refused from %s: %s' % (name, a0, why)
+                return out
+            self._back_to(n0)               # (B while walking under speed 29 punches instead of diving: never kept)
+            out = self.state()
+            out.update(kept=False, frames_played=0,
+                       warning=('%s refused from %s (after %d frame(s) it was %s): %s. Nothing was kept; moves() '
+                                'says what it needs (require)' % (name, a0, len(inp), out['action_name'], why)))
+        elif status == 'fail':
+            out['warning'] = 'played %d frames but did not end as planned: %s' % (len(inp), getattr(self.run, 'why', ''))
         return out
 
     def t_moves(self, a):
-        self.need()
-        return {'moves': sorted(self.M.SPECS)}
+        """every move: what it does, its parameters (frame-perfect waits, holds, cycles) and what it needs"""
+        import macros as M
+        out = []
+        for n in sorted(M.SPECS):
+            sp = M.SPECS[n]
+            out.append({'name': n, 'doc': sp.get('doc', ''), 'params': sp.get('params', {}),
+                        'require': sp.get('require', {}),
+                        'aliases': sorted(k for k, v in M.ALIASES.items() if v == n)})
+        return {'moves': out,
+                'water': 'in the water the moves do not apply: swim(x, z, y) swims with the fastest strokes'}
 
     def t_try(self, a):
         n0 = len(self.need() and self.stack)
@@ -248,19 +295,115 @@ class Play:
             out['kept'] = self.t_move(b) if a.get('name') else self.t_walk(b)
         return out
 
+    def t_swim(self, a):
+        """swim to (x, z) (y: a depth to reach, else level) with the fastest strokes; out by a water jump when the
+        target is above the water, when exit=true, or when the shore blocks Mario at the surface"""
+        g = self.need()
+        import swim
+        tx, tz = float(a['x']), float(a['z'])
+        ty = float(a['y']) if a.get('y') is not None else None
+        n = len(g.history)
+        ins, why = swim.swim_to(g, tx, tz, ty=ty, stop=float(a.get('stop', 100)), maxf=int(a.get('frames', 900)),
+                                exit_out=a.get('exit'))
+        if ins:
+            self._push('swim')
+        m = g.mario()
+        out = {'reached': why == 'arrived', 'why': why, 'frames': len(g.history) - n,
+               'dist_left': round(math.hypot(tx - m['pos_x'], tz - m['pos_z']), 1), 'mario': self.state()}
+        if why == 'not in water':
+            out['hint'] = 'Mario is not in the water: goto or a move (jump, dive) gets him in first'
+        elif why in ('jumped out', 'left the water'):
+            out['hint'] = 'out of the water: goto / move go on from here'
+        return out
+
+    def _land(self, tx, tz):
+        for _ in range(90):                 # (out of the water by a jump: on the ground first)
+            if not self.g.mario()['action'] & 0x800:
+                break
+            self.run.press(self.aim({'x': tx, 'z': tz}), 0, 32.0)
+
     def t_goto(self, a):
-        """to (x, z): running (style walk) or chained long jumps (style longjump), enemies avoided"""
+        """to (x, z): style auto (chained long jumps when far, running when near, swimming in the water), walk,
+        longjump or swim; enemies avoided"""
         g = self.need()
         import hlx
         tx, tz = float(a['x']), float(a['z'])
-        if str(a.get('style', 'walk')) == 'longjump':
-            ins, why = hlx.go_lj(g, tx, tz, stop=float(a.get('stop', 80)), maxf=int(a.get('frames', 400)))
-        else:
-            ins, why = hlx.go_walk(g, tx, tz, stop=float(a.get('stop', 50)), maxf=int(a.get('frames', 300)))
+        style = str(a.get('style', 'auto'))
+        stop = float(a.get('stop', 50))
+        n, legs, why = len(g.history), [], ''
+        import swim
+        ty = float(a['y']) if a.get('y') is not None else None
+
+        def swim_leg(legs_):
+            ins_, w = swim.swim_to(g, tx, tz, ty=ty, stop=max(stop, 80.0), maxf=int(a.get('frames', 900)))
+            legs_.append('swim: ' + w)
+            if w in ('jumped out', 'left the water'):
+                self._land(tx, tz)
+            return w
+
+        def land_leg(kind, legs_):
+            wet = lambda g_: self.swimmer().in_water()
+            if kind == 'longjump':
+                _, w = hlx.go_lj(g, tx, tz, stop=max(stop, 80.0), maxf=int(a.get('frames', 400)), done=wet)
+            else:
+                self._land(tx, tz)
+                left, w = int(a.get('frames', 300)), 'max'
+                while left > 0 and not wet(g):
+                    ins_, w = hlx.go_walk(g, tx, tz, stop=stop, maxf=min(10, left))
+                    left -= max(1, len(ins_))
+                    if w != 'max':
+                        break
+            w = 'in the water' if wet(g) else WHY.get(w, w)
+            legs_.append('%s: %s' % (kind, w))
+            if w == 'in the water' and style != kind:
+                w = swim_leg(legs_)
+            return w
+        if self.swimmer().in_water() or style == 'swim':
+            why = swim_leg(legs)
+        m = g.mario()
+        d = math.hypot(tx - m['pos_x'], tz - m['pos_z'])
+        if style != 'swim' and why != 'arrived' and not self.swimmer().in_water() and d > stop:
+            # auto: both ways raced from here (headless, a fraction of a second each), the faster arrival kept, else
+            # the one that got nearer
+            kinds = {'walk': ['walk'], 'longjump': ['longjump']}.get(style, ['longjump', 'walk'])
+            s0, res = g.save(), []
+            for kind in kinds:
+                g.load(s0)
+                lg = list(legs)
+                w = land_leg(kind, lg)
+                m = g.mario()
+                res.append((w != 'arrived', len(g.history), math.hypot(tx - m['pos_x'], tz - m['pos_z']), kind, w, lg,
+                            g.save()))
+            secs = float(a.get('search', 4))
+            if style == 'auto' and secs > 0:
+                import tas_route
+                g.load(s0)
+                q = tas_route.race(g, self.run, tas_route.Goal(tx, tz, stop=stop, ground=True), seconds=secs,
+                                   blocked=lambda g_: __import__('hlx').blocked(g_),
+                                   wet=lambda g_: self.swimmer().in_water())
+                if q['found']:
+                    g.load(s0)
+                    for f in q['inputs']:
+                        g.step(tuple(f))
+                    m = g.mario()
+                    res.append((False, len(g.history), math.hypot(tx - m['pos_x'], tz - m['pos_z']), 'tas',
+                                'arrived', list(legs) + ['tas: ' + ' > '.join(q['moves'])], g.save()))
+            # not there: the least frames + distance left at a TAS speed (a dialog that stops every try is met
+            # sooner by the faster one)
+            res.sort(key=lambda r: (r[0], r[1] if not r[0] else r[1] + r[2] / 48.0))
+            why, legs = res[0][4], res[0][5]
+            g.load(res[0][6])
+            if len(res) > 1:
+                legs.append('raced: %s' % ', '.join('%s %s in %d f' % (r[3], 'arrived' if not r[0] else
+                                                                        '%d left' % r[2], r[1] - n) for r in res))
         self._push('goto')
         m = g.mario()
-        return {'reached': why in ('arrive', 'arrivé', 'arrived'), 'why': why, 'frames': len(ins),
-                'dist_left': round(math.hypot(tx - m['pos_x'], tz - m['pos_z']), 1), 'mario': self.state()}
+        out = {'reached': why == 'arrived', 'why': why, 'frames': len(g.history) - n,
+               'legs': legs, 'dist_left': round(math.hypot(tx - m['pos_x'], tz - m['pos_z']), 1), 'mario': self.state()}
+        if not out['reached'] and why in ('max', 'in the water'):
+            out['hint'] = ('not there: a wall, a slope or a gap may hold Mario; scan its walls and floors, go by a '
+                           'nearer point, or use moves (a jump, a wall kick) to get past')
+        return out
 
     def t_collect(self, a):
         """go and take an object (part of its behaviour name; near_x / near_z: the one nearest that point); then on,
@@ -279,9 +422,12 @@ class Play:
         def taken():
             gone = not any(q['slot'] == o['slot'] and q['bhv'] == o['bhv'] for q in g.objects())
             return gone or g.coins > c0 or g.stars > s0
-        far = math.hypot(o['pos_x'] - m['pos_x'], o['pos_z'] - m['pos_z']) > 800
-        r = self.t_goto({'x': o['pos_x'], 'z': o['pos_z'], 'stop': 30, 'style': 'longjump' if far else 'walk'})
+        r = self.t_goto({'x': o['pos_x'], 'z': o['pos_z'], 'y': o['pos_y'], 'stop': 30, 'style': 'auto'})
         got = taken()
+        if not got and self.swimmer().in_water():
+            import swim
+            swim.swim_to(g, o['pos_x'], o['pos_z'], ty=o['pos_y'], stop=20.0, maxf=120, exit_out=False)
+            got = taken()
         for _ in range(90):                 # (a long jump can end in the air: land first, the object checked each frame)
             if got or not g.mario()['action'] & 0x800:
                 break
@@ -381,7 +527,10 @@ TOOLS_SPEC = [
               'standing in the castle grounds (US; power_on=true for the console just switched on); version us / jp. '
               'Call once (again to start over).',
      {'st': 'string', 'movie': 'string', 'version': 'string', 'power_on': 'boolean'}, []),
-    ('state', "Mario: position, speeds, facing, action, level / area, coins, stars, health, frames played.", {}, []),
+    ('state', "Mario: position (pos_x / pos_y / pos_z, units; y is up), forward_vel (units a frame; running caps at "
+              "32, a long jump at 48), facing (face_yaw_deg: 0 = +z, 90 = +x; face_yaw the game's 0..65535), "
+              "action_name, level / area, coins, stars, health (0..8), frames played (30 a second), in_water and "
+              "water_level when swimming.", {}, []),
     ('scan', "Read from RAM: objects (behaviour name, position, distance, height above Mario), floors by height, "
              "walls. filter='coin' / 'star' / any part of a behaviour name finds every match in the level.",
      {'radius': 'number', 'filter': 'string', 'limit': 'number', 'geometry': 'boolean'}, []),
@@ -391,21 +540,32 @@ TOOLS_SPEC = [
     ('walk', 'The stick toward (x, z) or a world direction yaw_deg (0 = +z, 90 = +x) for frames, the camera handled '
              'each frame; buttons held; mag 0..32.',
      {'x': 'number', 'z': 'number', 'yaw_deg': 'number', 'frames': 'number', 'buttons': 'array', 'mag': 'number'}, []),
-    ('move', "One of the engine's moves (see moves: dive_rollout, lj_chain, slide_kick, triple_jump, wall_kick, blj...) "
-             "aimed at (x, z) or yaw_deg; k: its cycles / hold. A move the game refuses comes back with a warning.",
-     {'name': 'string', 'x': 'number', 'z': 'number', 'yaw_deg': 'number', 'k': 'number'}, ['name']),
-    ('moves', "The engine's moves.", {}, []),
+    ('move', "One of the engine's speedrun moves, frame perfect and closed loop (moves() lists them with their docs: "
+             "dive_rollout, lj_chain, slide_kick, triple_jump, wall_kick, side_flip, blj...) aimed at (x, z) or yaw_deg. "
+             "params: its frame-perfect settings ({'cycles': 3}, {'hold': 4, 'wait': 1}: moves() gives each move's); "
+             "k: a shortcut for cycles / hold. A move the game refuses is taken back (kept=false) with the reason.",
+     {'name': 'string', 'x': 'number', 'z': 'number', 'yaw_deg': 'number', 'k': 'number', 'params': 'object',
+      'keep_failed': 'boolean'}, ['name']),
+    ('moves', "Every move: what it does (doc), its frame-perfect parameters with their defaults (params), what it "
+              "needs to start (require: fv_min = the forward speed).", {}, []),
     ('try', 'A walk or a move (same arguments) played and taken back: what it would give.',
      {'name': 'string', 'x': 'number', 'z': 'number', 'yaw_deg': 'number', 'frames': 'number', 'buttons': 'array',
-      'mag': 'number', 'k': 'number'}, []),
+      'mag': 'number', 'k': 'number', 'params': 'object'}, []),
     ('best', 'A move (name) or a walk (frames) tried at many facings at once (spread +- degrees around (x, z) or '
              'yaw_deg, every step degrees): the 5 best by the distance left to (x, z), else by speed; commit=true '
              'keeps the best. No emulator: dozens of tries take a fraction of a second.',
      {'name': 'string', 'x': 'number', 'z': 'number', 'yaw_deg': 'number', 'spread': 'number', 'step': 'number',
-      'frames': 'number', 'buttons': 'array', 'k': 'number', 'commit': 'boolean'}, []),
-    ('goto', 'To (x, z): style walk (running) or longjump (chained long jumps); enemies avoided; reached=true when '
-             'it arrived within stop units.',
-     {'x': 'number', 'z': 'number', 'style': 'string', 'stop': 'number', 'frames': 'number'}, ['x', 'z']),
+      'frames': 'number', 'buttons': 'array', 'k': 'number', 'params': 'object', 'commit': 'boolean'}, []),
+    ('goto', 'To (x, z): style auto (default: chained long jumps when far, running when near, swimming once in the '
+             'water), walk, longjump or swim; y: a depth for the swim; enemies avoided; reached=true when it arrived '
+             'within stop units; legs says what it did. auto also searches the TAS moves for search seconds (default 4).',
+     {'x': 'number', 'z': 'number', 'y': 'number', 'style': 'string', 'stop': 'number', 'frames': 'number',
+      'search': 'number'}, ['x', 'z']),
+    ('swim', 'In the water: swim to (x, z) (y: a depth; else level) with the fastest strokes (the swim strength built '
+             'up stroke after stroke to the cap of 28 u/f), steered every frame, over underwater walls; out by a '
+             'water jump when the target is above the water, exit=true, or the shore blocks Mario at the surface.',
+     {'x': 'number', 'z': 'number', 'y': 'number', 'stop': 'number', 'frames': 'number', 'exit': 'boolean'},
+     ['x', 'z']),
     ('collect', "Go and take an object (part of its behaviour name: 'coin', 'RedCoin', 'Star'...; near_x / near_z: "
                 "the one nearest that point); collected=true only if a counter went up or the object is gone.",
      {'name': 'string', 'near_x': 'number', 'near_z': 'number'}, ['name']),
@@ -421,15 +581,49 @@ TOOLS_SPEC = [
 ]
 
 
-def tool_list():
-    return [{'name': n, 'description': d,
+# --simple: the few tools a small model can drive, short words, short answers; goto / collect do the TAS work inside
+SIMPLE = {
+    'start': 'Start the game: Mario in the castle grounds. Call once.',
+    'state': 'Where Mario is: x, y, z, action, coins, stars, frames.',
+    'scan': "Find objects by name: filter='coin', 'star', 'door'. Gives their x, y, z.",
+    'goto': 'Go to x, z the fastest way (long jumps, swimming). reached=true when there.',
+    'collect': "Take an object: name='coin', 'RedCoin', 'Star'. collected=true when taken.",
+    'close_dialog': 'Close a text box when state says blocked.',
+    'undo': 'Take back the last action.',
+    'export': 'Save the run as a .m64 movie: path.',
+}
+KEEP = ('reached', 'collected', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+        'error')
+MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'stars', 'frames', 'blocked', 'in_water', 'level')
+
+
+def compact(r):
+    """a result cut to what a small model needs"""
+    if not isinstance(r, dict):
+        return r
+    if 'pos_x' in r:
+        return {k: (round(v) if isinstance(v, float) else v) for k, v in r.items() if k in MARIO}
+    out = {k: v for k, v in r.items() if k in KEEP}
+    if 'objects' in out:
+        out['objects'] = [{k: o[k] for k in ('name', 'x', 'y', 'z', 'dist')} for o in out['objects'][:10]]
+    if isinstance(r.get('mario'), dict):
+        out['mario'] = compact(r['mario'])
+    return out
+
+
+def tool_list(simple=False):
+    return [{'name': n, 'description': SIMPLE[n] if simple else d,
              'inputSchema': {'type': 'object', 'required': req,
-                             'properties': {k: ({'type': t, 'items': {}} if t == 'array' else {'type': t})
-                                            for k, t in props.items()}}}
-            for n, d, props, req in TOOLS_SPEC]
+                             'properties': {k: ({'type': t, 'items': {}} if t == 'array' else
+                                                {'type': t, 'additionalProperties': True} if t == 'object' else
+                                                {'type': t})
+                                            for k, t in props.items()
+                                            if not simple or k in ('x', 'z', 'name', 'filter', 'path', 'near_x',
+                                                                   'near_z', 'st', 'n')}}}
+            for n, d, props, req in TOOLS_SPEC if not simple or n in SIMPLE]
 
 
-def serve():
+def serve(simple=False):
     play = Play()
     out = sys.stdout
     sys.stdout = sys.stderr                             # (the engine's prints must never reach the protocol)
@@ -448,11 +642,13 @@ def serve():
             res = {'protocolVersion': prm.get('protocolVersion', '2024-11-05'), 'capabilities': {'tools': {}},
                    'serverInfo': {'name': 'sm64-headless', 'version': '1'}}
         elif meth == 'tools/list':
-            res = {'tools': tool_list()}
+            res = {'tools': tool_list(simple)}
         elif meth == 'tools/call':
             name, args = prm.get('name'), prm.get('arguments') or {}
             try:
                 r = getattr(play, 't_' + name)(args)
+                if simple:
+                    r = compact(r)
                 res = {'content': [{'type': 'text', 'text': json.dumps(r, default=str)}]}
             except Exception as e:
                 res = {'content': [{'type': 'text', 'text': 'error: %s' % e}], 'isError': True}
@@ -495,4 +691,4 @@ if __name__ == '__main__':
     if len(sys.argv) >= 2 and sys.argv[1] == '--demo':
         demo(sys.argv[2] if len(sys.argv) > 2 else None)
     else:
-        serve()
+        serve(simple='--simple' in sys.argv)
