@@ -404,6 +404,8 @@ class Play:
         took = self._took(before)
         if took:
             out['took'] = took                  # (on the way: a coin, a red coin or a star Mario ran into)
+        if out['mario'].get('blocked'):
+            out['blocked'] = True               # (also at the top: a text holds the game, close_dialog; not a wall)
         if why == WHY['stuck']:
             out['hint'] = ('not there: something holds Mario on the straight line (a wall, a slope, a gap, an object): '
                            'path(x, z) gives the turns around the walls; scan shows the walls and floors; a jump may get '
@@ -547,7 +549,8 @@ class Play:
         if not self.stack or self.stack[-1][1] != len(g.history):
             self._push('land')
         took = self._took(before)
-        return {'collected': bool(got), **({'took': took} if took else {}),
+        st = self.state()
+        return {'collected': bool(got), **({'took': took} if took else {}), **({'blocked': True} if st.get('blocked') else {}),
                 'target': {'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']),
                                                    'z': round(o['pos_z'])},
                 'coins': [c0, g.coins], 'stars': [s0, g.stars], 'goto': {k: r[k] for k in ('reached', 'why', 'frames')},
@@ -719,7 +722,7 @@ SIMPLE = {
     'undo': 'Take back the last action.',
     'export': 'Save the run as a .m64 movie: path.',
 }
-KEEP = ('reached', 'collected', 'took', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+KEEP = ('reached', 'collected', 'took', 'blocked', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
         'error', 'here', 'warps', 'run_frames', 'note')
 MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'red_coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
          'level_name')
