@@ -12,9 +12,6 @@ of the surface, nose level or up -> WATER_JUMP (62 u/f up).
 """
 import math
 
-WATER_ACTS = ('WATER_IDLE', 'WATER_ACTION_END', 'BREASTSTROKE', 'SWIMMING_END', 'FLUTTER_KICK', 'WATER_PLUNGE',
-              'WATER_PUNCH', 'HOLD_WATER_IDLE', 'HOLD_WATER_ACTION_END', 'HOLD_BREASTSTROKE', 'HOLD_SWIMMING_END',
-              'HOLD_FLUTTER_KICK', 'WATER_SHELL_SWIMMING', 'BACKWARD_WATER_KB', 'FORWARD_WATER_KB')
 STROKE_FRAMES = 14
 MAX_PITCH = 0x3000
 
@@ -36,7 +33,6 @@ class Swimmer:
         self.ms = g.addr('gMarioStates')
         self.o = {k: mm[k] for k in ('action', 'actionTimer', 'faceAngle', 'angleVel', 'pos', 'forwardVel',
                                       'waterLevel')}
-        self.water = {M.ACT[n] for n in WATER_ACTS if n in M.ACT}
 
     def act(self):
         return self.g.read(self.ms, 'I', self.o['action'])
@@ -46,7 +42,7 @@ class Swimmer:
         return self.M.NAME.get(a, hex(a))
 
     def in_water(self):
-        return self.act() in self.water
+        return (self.act() & 0x1C0) == 0xC0          # (the action group SUBMERGED: every water action, a hack's too)
 
     def read(self):
         g, ms, o = self.g, self.ms, self.o
@@ -95,7 +91,7 @@ class Swimmer:
         if jump:
             sx, _ = self.steer(s, tx, None, tz)
             a = not prev_a
-            return (_raw(sx * 0.3), -128, 0x80 if a else 0, 0), a
+            return (_raw(sx * 0.3), _raw(-64), 0x80 if a else 0, 0), a     # (-70: under -60, inside a real stick's gate)
         sx, sy = self.steer(s, tx, ty, tz)
         a = self.stroke_a(name, s['timer'], prev_a)
         return (_raw(sx), _raw(sy), 0x80 if a else 0, 0), a
