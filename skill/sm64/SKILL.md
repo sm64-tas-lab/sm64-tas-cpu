@@ -93,6 +93,9 @@ export(path="run.m64")
 
 `start_mupen(savestate=...)` once, `get_state`, `step_frames`, `save_memstate` / `load_memstate`, `screenshot`,
 `export_run`, then `replay_movie` replays the movie on a fresh Mupen and returns the final state to prove it.
+`swim(x, z, y)` swims there with the same fastest strokes as headless. For a frame-perfect line, plan it headless
+(the moves, `swim`), `export` it, then `play_inputs(m64=..., from_frame=...)` plays its exact frames in Mupen
+(or `inputs=[[x, y, hi, lo], ...]`).
 
 ## When something goes wrong
 
