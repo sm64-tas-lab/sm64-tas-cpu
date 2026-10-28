@@ -270,18 +270,33 @@ class Game:
         self.run(inputs)
 
     def save_snapshot(self, path):
-        """Saves the full compressed memory state (instant loading, no replay)."""
+        """Saves the full compressed memory state (instant loading, no replay), with the DLL's base address and every
+        input played since power-on: the memory holds absolute pointers, valid only where the DLL is loaded now."""
         import pickle, zlib
-        data = zlib.compress(pickle.dumps(self.save(), protocol=pickle.HIGHEST_PROTOCOL))
+        snap = {'v': 2, 'base': self.base, 'pid': os.getpid(), 'state': self.save(), 'history': list(self.history)}
+        data = zlib.compress(pickle.dumps(snap, protocol=pickle.HIGHEST_PROTOCOL))
         with open(path, 'wb') as f:
             f.write(data)
 
     def load_snapshot(self, path):
-        """Instantly loads a full compressed memory state."""
+        """Loads a snapshot: its memory at once when it was saved by this process with the DLL at the same address,
+        else its inputs played again from power-on (another run: the saved pointers would crash the game; a replay
+        takes a fraction of a second)."""
         import pickle, zlib
         with open(path, 'rb') as f:
-            data = zlib.decompress(f.read())
-        self.load(pickle.loads(data))
+            snap = pickle.loads(zlib.decompress(f.read()))
+        if not isinstance(snap, dict):         # (an old snapshot: memory only, no way to check it)
+            self.load(snap)
+            return 'memory'
+        if snap['base'] == self.base and snap.get('pid') == os.getpid():
+            self.load(snap['state'])
+            self.history[:] = snap['history']
+            return 'memory'
+        self.load(self._boot)
+        del self.history[:]
+        for f in snap['history']:
+            self.step(f)
+        return 'replayed'
 
     def reset(self):
         self.load(self._boot)
