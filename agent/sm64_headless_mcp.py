@@ -275,7 +275,10 @@ class Play:
 
     def t_try(self, a):
         n0 = len(self.need() and self.stack)
+        b = self._snap()
         r = self.t_move(a) if a.get('name') else self.t_walk(a)
+        for k, v in self._effects(b).items():     # (what it would take or cost, said before it is taken back)
+            r.setdefault(k, v)
         self._back_to(n0)
         r['kept'] = False
         return r
@@ -439,6 +442,44 @@ class Play:
         now = self._counters()
         return {k: now[k] - before[k] for k in now if now[k] != before[k]}
 
+    # what a tool did to Mario besides moving him: taken, hurt, dead, another level (said by every tool that plays)
+    QUIET = ('start', 'state', 'scan', 'warps', 'path', 'moves', 'checkpoint', 'restore', 'undo', 'export', 'snapshot',
+             'try')
+
+    def _snap(self):
+        g = self.g
+        m = g.mario()
+        return dict(self._counters(), hp=(g.health >> 8) & 0xFF, where=(m['level'], m['area']), dead=self._dead())
+
+    def _effects(self, b):
+        g = self.g
+        now = self._snap()
+        out = {}
+        took = {k: now[k] - b[k] for k in ('coins', 'stars', 'red_coins') if now[k] != b[k]}
+        if took:
+            out['took'] = took
+        if now['hp'] < b['hp'] or (now['dead'] and not b['dead']):
+            m = g.mario()
+            near = sorted(((math.hypot(o['pos_x'] - m['pos_x'], o['pos_z'] - m['pos_z']), o['bhv']) for o in g.objects()
+                           if o['bhv'] != 'bhvMario'), key=lambda t: t[0])
+            out['hurt'] = {'health': [b['hp'], now['hp']],
+                           'near': list(dict.fromkeys(n for d, n in near if d < 1000.0))[:5]}   # (what may have hit him)
+        if now['dead'] and not b['dead']:
+            out['died'] = True
+        if now['where'] != b['where']:
+            import warps
+            out['left_level'] = {'from': warps.level_name(*b['where']), 'to': warps.level_name(*now['where'])}
+        return out
+
+    def call(self, name, a):
+        """a tool by its name, with what it did to Mario added (took, hurt, died, left_level)"""
+        b = self._snap() if self.g is not None and name not in self.QUIET else None
+        r = getattr(self, 't_' + name)(a)
+        if b is not None and isinstance(r, dict):
+            for k, v in self._effects(b).items():
+                r.setdefault(k, v)
+        return r
+
     def _dead(self):
         m = self.g.mario()
         return 'DEATH' in self.M.NAME.get(m['action'], '') or ((self.g.health >> 8) & 0xFF) == 0
@@ -452,6 +493,88 @@ class Play:
         xs, zs = [t[1] for t in last], [t[2] for t in last]
         return max(xs) - min(xs) < moved and max(zs) - min(zs) < moved
 
+    def _walk_ok(self, pts):
+        """the turns walked from here as goto walks them, then all taken back -> (ok, (from, to, where it failed))"""
+        import hlx
+        g = self.g
+        s0, h0 = g.save(), len(g.history)
+        prev = g.mario()
+        prev = (prev['pos_x'], prev['pos_y'], prev['pos_z'])
+        try:
+            for i, q in enumerate(pts):
+                stop = 50.0 if i == len(pts) - 1 else 120.0
+                left = int(math.hypot(q[0] - prev[0], q[2] - prev[2]) / 6.0) + 150
+                trail, why = [], 'max'
+                while left > 0:
+                    m = g.mario()
+                    d = math.hypot(q[0] - m['pos_x'], q[2] - m['pos_z'])
+                    if 'SLIDE' in self.M.NAME.get(m['action'], '') or self._dead():
+                        why = 'slid'
+                        break
+                    trail.append((len(g.history), m['pos_x'], m['pos_z']))
+                    if self._stuck(trail):
+                        why = 'stuck'
+                        break
+                    mag = 1.0 if d > 300.0 else max(0.25, d / 300.0)
+                    ins_, why = hlx.go_walk(g, q[0], q[2], stop=stop, maxf=min(10 if d > 400.0 else 2, left), mag=mag)
+                    left -= max(1, len(ins_))
+                    if why == 'bloque' and self._in_door():
+                        left -= self._through_door()
+                        why = 'max'
+                        continue
+                    if why != 'max':
+                        break
+                if why != 'arrive':
+                    m = g.mario()
+                    return False, (prev, q, (m['pos_x'], m['pos_z']))
+                prev = q
+            return True, None
+        finally:
+            g.load(s0)
+            del g.history[h0:]
+
+    def _checked_path(self, nv, p0, target, rounds=4):
+        """a path whose turns were walked for real (and taken back); a failed stretch is avoided and searched again
+        -> (turns, checked or None when no path, rounds)"""
+        pts = nv.path(p0, target)
+        for k in range(rounds):
+            if not pts:
+                return pts, None, k
+            ok, fail = self._walk_ok(pts)
+            if ok:
+                return pts, True, k
+            nv.mark_bad(fail[0], fail[1], fail[2])
+            again = nv.path(p0, target)
+            if not again:
+                return pts, False, k
+            pts = again
+        return pts, False, rounds
+
+    def _on_objects(self, nv, pts, look=12):
+        """turns on an object's floor -> {index: {'on': its behaviour, 'moving': it moves}} (a few frames played and
+        taken back to see it move)"""
+        g = self.g
+        out = {}
+        for i, q in enumerate(pts):
+            slot = nv.floor_object(q[0], q[2], q[1])
+            if slot is not None:
+                out[i] = {'slot': slot}
+        if not out:
+            return {}
+        at = lambda: {o['slot']: (o['bhv'], o['pos_x'], o['pos_y'], o['pos_z']) for o in g.objects()}
+        before, s0, h0 = at(), g.save(), len(g.history)
+        for _ in range(look):
+            g.step((0, 0, 0, 0))
+        after = at()
+        g.load(s0)
+        del g.history[h0:]
+        res = {}
+        for i, d in out.items():
+            b0, a0 = before.get(d['slot']), after.get(d['slot'])
+            if b0:
+                res[i] = {'on': b0[0], 'moving': bool(a0) and math.dist(b0[1:], a0[1:]) > 5.0}
+        return res
+
     def t_path(self, a):
         """the walking path from Mario to (x, z) around the walls (nothing is played): its turns, to goto one by one"""
         g = self.need()
@@ -463,7 +586,7 @@ class Play:
         nv = nav.for_game(g)
         if nv.clear(p0, (tx, p0[1] if ty is None else ty, tz)):
             return {'found': True, 'straight': True, 'turns': [], 'hint': 'the straight line is open: goto(x, z)'}
-        pts = nv.path(p0, (tx, ty, tz))
+        pts, checked, tries = self._checked_path(nv, p0, (tx, ty, tz))
         above, cut_off = None, []
         if not pts and ty is not None:
             # no floor at the target's height: the highest floor under it that a walk reaches (a summit before the
@@ -487,13 +610,23 @@ class Play:
                                '%d units from it and %d below it; the rest is a jump, a climb or another way'
                                % (out['nearest']['left'], out['nearest']['below']))
             return out
-        out = {'found': True, 'straight': False, 'turns': [{'x': q[0], 'y': q[1], 'z': q[2]} for q in pts],
+        if checked is None and pts:
+            checked = self._walk_ok(pts)[0]
+        moving = self._on_objects(nv, pts)
+        out = {'found': True, 'straight': False,
+               'turns': [dict({'x': q[0], 'y': q[1], 'z': q[2]}, **moving.get(i, {})) for i, q in enumerate(pts)],
                'hint': 'goto each turn in order (the last is the target), stop=120 for the turns on the way (they are '
                        'only where to pass); doors open as Mario walks in; objects are not in the path (scan them)'}
         if above is not None:
             out['above_floor'] = above
             out['hint'] = ('the walk ends on the floor under the target, %d units below it (a floating coin, a '
                            'platform): the last part is yours, a jump, a climb or another way up' % above)
+        out['checked'] = bool(checked)      # (walked and taken back: this path is one Mario really walks)
+        if not checked:
+            out['hint'] += '; not all of it could be checked by walking it (a slope, an object): watch goto\'s why'
+        if any(t.get('moving') for t in out['turns']):
+            out['hint'] += ('; a turn marked moving is on a moving object (a platform): its height is the one of now, '
+                            'wait for it (step) or time the jump')
         if ty is not None and cut_off:
             # (a floor right under the target that no walk reaches: an island, a high ledge)
             out['floor_under'] = cut_off[0]
@@ -748,7 +881,7 @@ SIMPLE = {
     'undo': 'Take back the last action.',
     'export': 'Save the run as a .m64 movie: path.',
 }
-KEEP = ('reached', 'collected', 'took', 'blocked', 'nearest', 'floor_under', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+KEEP = ('reached', 'collected', 'checked', 'took', 'hurt', 'died', 'left_level', 'blocked', 'nearest', 'floor_under', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
         'error', 'here', 'warps', 'run_frames', 'note')
 MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'red_coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
          'level_name')
@@ -759,7 +892,7 @@ def compact(r):
     if not isinstance(r, dict):
         return r
     if 'pos_x' in r:
-        return {k: (round(v) if isinstance(v, float) else v) for k, v in r.items() if k in MARIO}
+        return {k: (round(v) if isinstance(v, float) else v) for k, v in r.items() if k in MARIO or k in KEEP}
     out = {k: v for k, v in r.items() if k in KEEP}
     if 'objects' in out:
         out['objects'] = [{k: o[k] for k in ('name', 'x', 'y', 'z', 'dist')} for o in out['objects'][:10]]
@@ -803,7 +936,7 @@ def serve(simple=False):
         elif meth == 'tools/call':
             name, args = prm.get('name'), prm.get('arguments') or {}
             try:
-                r = getattr(play, 't_' + name)(args)
+                r = play.call(name, args)
                 if simple:
                     r = compact(r)
                 res = {'content': [{'type': 'text', 'text': json.dumps(r, default=str)}]}

@@ -76,6 +76,27 @@ def coins(P):
     post = P.t_path({'x': 250, 'z': 1920, 'y': 1000})
     check('the coin on the post: the nearest reachable point is given', 'nearest' in post,
           (post.get('nearest') or {}).get('left'))
+    plat = P.call('path', {'x': 1600, 'z': 4440, 'y': 980})
+    check('the checkerboard platform: path marks the turn on it as moving',
+          any(t.get('moving') for t in plat.get('turns', [])))
+    P.t_checkpoint({'name': 'bob2'})
+    near = post['nearest']['turns']
+    for t in near:
+        P.t_goto({'x': t['x'], 'z': t['z'], 'stop': 120 if t is not near[-1] else 40, 'frames': 1500})
+    tr = P.call('try', {'name': 'double_jump', 'x': 250, 'z': 1920})
+    check('try says what a jump would take (the coin on the post)', (tr.get('took') or {}).get('red_coins') == 1,
+          tr.get('took'))
+    hurt = None
+    for k in range(8):
+        r = P.call('walk', {'x': 260, 'z': 1920, 'frames': 20, 'buttons': ['A'] if k % 2 else []})
+        if r.get('hurt'):
+            hurt = r
+            break
+    check('walked into Chain Chomp: hurt says so and names it', bool(hurt) and 'bhvChainChomp' in hurt['hurt']['near'],
+          hurt and hurt['hurt'])
+    P.t_restore({'name': 'bob2'})
+    hall = P.call('path', {'x': 4934, 'z': 861, 'y': 1352})
+    check('a path walked for real says checked', hall.get('checked') is True, hall.get('checked'))
     col = P.t_collect({'name': 'RedCoin', 'near_x': 0, 'near_z': 0})
     check('collect far from any red coin says not there', col['collected'] is False and 'why' in col)
     for t in [(-5575, 5675), (-2975, 3075), (-1275, 1075), (225, -425), (225, -475), (-25, -725)]:

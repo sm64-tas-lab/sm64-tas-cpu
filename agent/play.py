@@ -70,7 +70,7 @@ def main(argv):
                 raise ValueError('unknown command %s (commands: %s; --full for every tool)'
                                  % (tool, ', '.join(sorted(set(S.SIMPLE) | set(POSITIONAL)))))
             tool, args = parse(line)
-            r = getattr(play, 't_' + tool)(args)
+            r = play.call(tool, args)
             r = r if full else S.compact(r)
         except Exception as e:
             r = {'error': '%s: %s' % (type(e).__name__, e)}

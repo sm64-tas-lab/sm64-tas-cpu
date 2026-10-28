@@ -74,11 +74,13 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   `floor_under`: the target stands over a floor no walk reaches (an island: a cannon, a jump from higher). No path
   at all gives `nearest` (the turns to the reachable floor nearest the target, how far and how far below it is);
   the rest is a jump, a locked door (star doors need stars) or another way. path refuses slopes Mario would slide
-  back down.
+  back down. A turn with `moving: true` stands on a moving object (a platform): its height is the one of now. path
+  walks its turns before answering and takes them back: `checked: true` means Mario really walked it.
 - `goto`'s `why`: `arrived`; `stuck` (held in place: a wall, a slope, a gap, an object); `slid back` (a slope too
   steep to walk up); `out of frames` (still on the way: goto again or more `frames`); `died` (a pit, lava, an enemy: `restore` a checkpoint); a text; the water;
-  the level changed. `goto` / `collect` say `took` when Mario ran into a coin, a red coin or a star on the way
-  (`{"red_coins": 1}`): it counts, do not undo it. `state().red_coins` counts the red coins taken in this course.
+  the level changed. Every tool that plays frames (`goto`, `collect`, `move`, `walk`, `step`, `swim`, `try`...)
+  says `took` when Mario took a coin, a red coin or a star (`{"red_coins": 1}`: it counts, do not undo it; `try`
+  says what it would take), `hurt` when he lost health (`near`: what may have hit him), `died`, and `left_level`. `state().red_coins` counts the red coins taken in this course.
   A red coin star appears only once the 8 red coins are taken (its marker shows where): look for it after that.
 - Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one). Started from `start()`
   (no .st), the movie begins at power-on: `frames` counts the boot too, `run_frames` the run, and in Mupen it is
