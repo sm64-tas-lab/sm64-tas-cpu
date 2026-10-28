@@ -339,155 +339,76 @@ class Play:
             self.run.press(self.aim({'x': tx, 'z': tz}), 0, 32.0)
 
     def t_goto(self, a):
-        """to (x, z): style auto (chained long jumps when far, running when near, swimming in the water), walk,
-        longjump or swim; enemies avoided. The straight line first; stuck on the way (a wall), the walking path around
-        the walls is taken and the better arrival kept"""
-        g = self.need()
-        n0 = len(self.stack)
-        out = self._goto(a, False)
-        if out['reached'] or out['why'] != 'max' or not a.get('route', True) or self.swimmer().in_water():
-            return out
-        keep = (g.save(), list(g.history), list(self.stack))
-        self._back_to(n0)
-        out2 = self._goto(a, True)
-        if out2['reached'] or out2['dist_left'] < out['dist_left'] - 50.0:
-            return out2
-        g.load(keep[0])                     # (the path round did no better: the straight try kept)
-        g.history[:] = keep[1]
-        self.stack[:] = keep[2]
-        return out
-
-    def _goto(self, a, route):
+        """straight to (x, z) the way the model chose: style walk (default: running), longjump (chained long jumps)
+        or swim (in the water); it stops on what it meets (a wall, a text, the water, a level change) and says why.
+        A door on the way is gone through. Around walls: path() gives the turns"""
         g = self.need()
         import hlx
-        tx, tz = float(a['x']), float(a['z'])
-        style = str(a.get('style', 'auto'))
-        stop = float(a.get('stop', 50))
-        n, legs, why = len(g.history), [], ''
         import swim
+        tx, tz = float(a['x']), float(a['z'])
         ty = float(a['y']) if a.get('y') is not None else None
-
-        def swim_leg(legs_):
-            ins_, w = swim.swim_to(g, tx, tz, ty=ty, stop=max(stop, 80.0), maxf=int(a.get('frames', 900)))
-            legs_.append('swim: ' + w)
-            if w in ('jumped out', 'left the water'):
-                self._land(tx, tz)
-            return w
-
-        def land_leg(kind, legs_):
-            wet = lambda g_: self.swimmer().in_water()
-            if kind == 'longjump':
-                _, w = hlx.go_lj(g, tx, tz, stop=max(stop, 80.0), maxf=int(a.get('frames', 400)), done=wet)
-            else:
-                self._land(tx, tz)
-                left, w = int(a.get('frames', 300)), 'max'
-                while left > 0 and not wet(g):
-                    ins_, w = hlx.go_walk(g, tx, tz, stop=stop, maxf=min(10, left))
-                    left -= max(1, len(ins_))
-                    if w == 'bloque' and self._in_door():
-                        left -= self._through_door()
-                        w = 'max'
-                        if (g.mario()['level'], g.mario()['area']) != where0:
-                            w = 'niveau'
-                            break
-                        continue
-                    if w != 'max':
-                        break
-            w = 'in the water' if wet(g) else WHY.get(w, w)
-            legs_.append('%s: %s' % (kind, w))
-            if w == 'in the water' and style != kind:
-                w = swim_leg(legs_)
-            return w
+        style = str(a.get('style', 'walk'))
+        stop = float(a.get('stop', 50))
+        n, legs = len(g.history), []
         where0 = (g.mario()['level'], g.mario()['area'])
-        if self.swimmer().in_water() or style == 'swim':
-            why = swim_leg(legs)
-        elif route:
-            why = self._route_legs(tx, ty, tz, stop, legs, where0)
-        m = g.mario()
-        d = math.hypot(tx - m['pos_x'], tz - m['pos_z'])
-        if why in ('a dialog or a cutscene holds the game (close_dialog)', 'the level changed'):
-            d = 0.0                          # (stopped on the way: said as it is, no race from there)
-        if style != 'swim' and why != 'arrived' and not self.swimmer().in_water() and d > stop:
-            # auto: both ways raced from here (headless, a fraction of a second each), the faster arrival kept, else
-            # the one that got nearer
-            kinds = {'walk': ['walk'], 'longjump': ['longjump']}.get(style, ['longjump', 'walk'])
-            s0, res = g.save(), []
-            for kind in kinds:
-                g.load(s0)
-                lg = list(legs)
-                w = land_leg(kind, lg)
-                m = g.mario()
-                res.append((w != 'arrived', len(g.history), math.hypot(tx - m['pos_x'], tz - m['pos_z']), kind, w, lg,
-                            g.save()))
-            secs = float(a.get('search', 4))
-            if style == 'auto' and secs > 0:
-                import tas_route
-                g.load(s0)
-                q = tas_route.race(g, self.run, tas_route.Goal(tx, tz, stop=stop, ground=True), seconds=secs,
-                                   blocked=lambda g_: __import__('hlx').blocked(g_),
-                                   wet=lambda g_: self.swimmer().in_water())
-                if q['found']:
-                    g.load(s0)
-                    for f in q['inputs']:
-                        g.step(tuple(f))
-                    m = g.mario()
-                    res.append((False, len(g.history), math.hypot(tx - m['pos_x'], tz - m['pos_z']), 'tas',
-                                'arrived', list(legs) + ['tas: ' + ' > '.join(q['moves'])], g.save()))
-            # not there: the least frames + distance left at a TAS speed (a dialog that stops every try is met
-            # sooner by the faster one)
-            res.sort(key=lambda r: (r[0], r[1] if not r[0] else r[1] + r[2] / 48.0))
-            why, legs = res[0][4], res[0][5]
-            g.load(res[0][6])
-            if len(res) > 1:
-                legs.append('raced: %s' % ', '.join('%s %s in %d f' % (r[3], 'arrived' if not r[0] else
-                                                                        '%d left' % r[2], r[1] - n) for r in res))
+        wet = lambda: self.swimmer().in_water()
+        if style == 'swim':
+            if not wet():
+                why = 'not in the water (style walk or longjump on land)'
+            else:
+                _, why = swim.swim_to(g, tx, tz, ty=ty, stop=max(stop, 80.0), maxf=int(a.get('frames', 900)))
+                if why in ('jumped out', 'left the water'):
+                    self._land(tx, tz)
+        elif wet():
+            why = 'in the water: use style swim (or swim())'
+        elif style == 'longjump':
+            _, why = hlx.go_lj(g, tx, tz, stop=max(stop, 80.0), maxf=int(a.get('frames', 400)), done=lambda g_: wet())
+            why = 'in the water' if wet() else WHY.get(why, why)
+        else:
+            self._land(tx, tz)
+            left, why = int(a.get('frames', 300)), 'max'
+            while left > 0 and not wet():
+                ins_, why = hlx.go_walk(g, tx, tz, stop=stop, maxf=min(10, left))
+                left -= max(1, len(ins_))
+                if why == 'bloque' and self._in_door():
+                    left -= self._through_door()
+                    why = 'max'
+                    if (g.mario()['level'], g.mario()['area']) != where0:
+                        why = 'niveau'
+                        break
+                    continue
+                if why != 'max':
+                    break
+            why = 'in the water' if wet() else WHY.get(why, why)
+        legs.append('%s: %s' % (style, why))
         self._push('goto')
         m = g.mario()
-        out = {'reached': why == 'arrived', 'why': why, 'frames': len(g.history) - n,
-               'legs': legs, 'dist_left': round(math.hypot(tx - m['pos_x'], tz - m['pos_z']), 1), 'mario': self.state()}
-        if not out['reached'] and why in ('max', 'in the water'):
-            out['hint'] = ('not there: a wall, a slope or a gap may hold Mario; scan its walls and floors, go by a '
-                           'nearer point, or use moves (a jump, a wall kick) to get past')
+        out = {'reached': why == 'arrived', 'why': why, 'frames': len(g.history) - n, 'legs': legs,
+               'dist_left': round(math.hypot(tx - m['pos_x'], tz - m['pos_z']), 1), 'mario': self.state()}
+        if why == 'max':
+            out['hint'] = ('not there: something holds Mario on the straight line (a wall, a slope, a gap): path(x, z) '
+                           'gives the turns around the walls; scan shows the walls and floors; a jump may get past')
+        elif why == 'in the water':
+            out['hint'] = 'Mario is in the water: swim(x, z) or goto with style swim'
         return out
 
-    def _route_legs(self, tx, ty, tz, stop, legs, where0):
-        """the straight line to the target crosses a wall or a gap: the walking path around them (nav), its turns
-        walked one by one (doors gone through); the last straight is left to the race -> why stopped, or ''"""
-        import hlx
+    def t_path(self, a):
+        """the walking path from Mario to (x, z) around the walls (nothing is played): its turns, to goto one by one"""
+        g = self.need()
         import nav
-        g = self.g
         m = g.mario()
-        a = (m['pos_x'], m['pos_y'], m['pos_z'])
-        if m['action'] & 0x800 or math.hypot(tx - a[0], tz - a[2]) < 300.0:
-            return ''
+        p0 = (m['pos_x'], m['pos_y'], m['pos_z'])
+        tx, tz = float(a['x']), float(a['z'])
+        ty = float(a['y']) if a.get('y') is not None else None
         nv = nav.for_game(g)
-        if nv.clear(a, (tx, a[1] if ty is None else ty, tz)):
-            return ''
-        pts = nv.path(a, (tx, ty, tz))
+        if nv.clear(p0, (tx, p0[1] if ty is None else ty, tz)):
+            return {'found': True, 'straight': True, 'turns': [], 'hint': 'the straight line is open: goto(x, z)'}
+        pts = nv.path(p0, (tx, ty, tz))
         if not pts:
-            legs.append('route: no walking path around the walls (a jump, a locked door or another way?)')
-            return ''
-        if len(pts) < 2:
-            return ''
-        legs.append('route: %d turns around the walls %s' % (len(pts) - 1, [list(q) for q in pts[:-1]]))
-        for q in pts[:-1]:
-            left = int(math.hypot(q[0] - g.mario()['pos_x'], q[2] - g.mario()['pos_z']) / 8.0) + 90
-            while left > 0:
-                ins_, w = hlx.go_walk(g, q[0], q[2], stop=60.0, maxf=min(10, left))
-                left -= max(1, len(ins_))
-                if w == 'bloque' and self._in_door():
-                    left -= self._through_door()
-                    if (g.mario()['level'], g.mario()['area']) != where0:
-                        return 'the level changed'
-                    continue
-                if w == 'bloque':
-                    return WHY['bloque']
-                if w != 'max':
-                    break
-            if w not in ('arrive',) and left <= 0:
-                legs.append('route: stuck before the turn at %s' % [q[0], q[1], q[2]])
-                return ''
-        return ''
+            return {'found': False, 'hint': 'no walking path: a jump up, a gap, a locked door, or another floor first '
+                                             '(scan the floors around; warps for the doors)'}
+        return {'found': True, 'straight': False, 'turns': [{'x': q[0], 'y': q[1], 'z': q[2]} for q in pts],
+                'hint': 'goto each turn in order (the last is the target); doors on the way open as Mario walks in'}
 
     def t_warps(self, a):
         """where the doors, pipes and paintings of this area lead"""
@@ -495,9 +416,18 @@ class Play:
         import warps
         m = g.mario()
         flt = str(a.get('to') or '').lower()
-        ws = [w for w in warps.warps(g) if not flt or flt in w['to'].lower()]
-        return {'here': warps.level_name(m['level'], m['area']), 'warps': ws[:int(a.get('limit', 30))],
-                'hint': 'goto a warp\'s x, z (a door: walk into it; a painting: goto in front of it, then jump into it)'}
+        ws = [w for w in warps.warps(g) if not flt or flt in w['to'].lower()][:int(a.get('limit', 30))]
+        for w in ws:
+            if w['kind'] == 'painting':
+                f = self._front(w)
+                if f:
+                    w['front'] = {'x': round(f[0]), 'z': round(f[1])}
+                w['how'] = ('goto its front, then jump toward the painting (walk to its x, z with buttons A for ~12 '
+                            'frames): its warp is behind a 100-unit lip at its foot')
+            else:
+                w['how'] = 'walk into it (a door opens as Mario walks in)'
+        return {'here': warps.level_name(m['level'], m['area']), 'warps': ws,
+                'hint': 'after a painting: the star select and the course text, close_dialog until state has no blocked'}
 
     def _front(self, w, r=450.0):
         """a floor in front of a painting, at its height, on the room's side (a cell there and one further out)"""
@@ -514,77 +444,10 @@ class Play:
                     best = (d, pts[0])
         return best[1] if best else None
 
-    def _settle(self, where0, maxf=900):
-        """after a warp: the fade, the star select and the course's opening text passed (A one frame out of two
-        while the game holds), until Mario moves freely in the new place -> the frames played"""
-        import hlx
-        g, n = self.g, 0
-        while n < maxf:
-            m = g.mario()
-            moved = (m['level'], m['area']) != where0
-            free = (g.read('sCurrPlayMode', 'i') == 0 and not hlx.blocked(g) and (m['action'] & 0x1C0) in (0, 0x40)
-                    and 'SPAWN' not in self.M.NAME.get(m['action'], ''))
-            if moved and free:
-                break
-            g.step((0, 0, 0x80 if (moved and hlx.blocked(g) and n % 2 == 0) else 0, 0))
-            n += 1
-        return n
-
-    def t_enter(self, a):
-        """through a door or into a painting by where it leads (to: part of the destination's name): there by goto
-        (around the walls), then a jump into the painting / a walk into the door, and on until Mario moves in the new
-        place (the star select and opening text passed)"""
-        g = self.need()
-        import warps
-        flt = str(a.get('to') or '').lower()
-        ws = [w for w in warps.warps(g) if flt in w['to'].lower()]
-        if not ws:
-            here = sorted({w['to'] for w in warps.warps(g)})
-            return {'entered': False, 'why': 'no door or painting here leads to %s' % a.get('to'),
-                    'hint': 'from here: %s' % (', '.join(here) or 'nothing (another room or floor first?)')}
-        w = ws[0]
-        n0, where0, legs = len(g.history), (g.mario()['level'], g.mario()['area']), []
-        if w['kind'] == 'painting':
-            front = self._front(w)
-            if front is None:
-                return {'entered': False, 'why': 'no floor found in front of the painting', 'warp': w}
-            r = self.t_goto({'x': front[0], 'z': front[1], 'stop': 60})
-            legs += r.get('legs', [])
-            if not r['reached']:
-                return {'entered': False, 'why': 'could not get in front of the painting: ' + r['why'], 'legs': legs,
-                        'warp': w, 'mario': self.state()}
-            s0, done = g.save(), False
-            for run_up in (0, 8, 16):          # (a jump at once, or after a few frames' run toward it)
-                g.load(s0)
-                del g.history[len(g.history):]
-                yaw = self.aim({'x': w['x'], 'z': w['z']})
-                for f in range(run_up + 70):
-                    self.run.press(yaw, 0x80 if run_up <= f < run_up + 12 else 0, 32.0)
-                    if self.M.NAME.get(g.mario()['action'], '') == 'DISAPPEARED' or (
-                            g.mario()['level'], g.mario()['area']) != where0:
-                        done = True
-                        break
-                if done:
-                    legs.append('jumped into the painting' + (' after %d frames of run-up' % run_up if run_up else ''))
-                    break
-            if not done:
-                g.load(s0)
-                return {'entered': False, 'why': 'the jump did not reach the painting', 'legs': legs, 'warp': w,
-                        'mario': self.state()}
-        else:
-            r = self.t_goto({'x': w['x'], 'z': w['z'], 'stop': 20, 'style': 'walk'})
-            legs += r.get('legs', [])
-            self._through_door()
-        self._settle(where0)
-        self._push('enter')
-        m = g.mario()
-        ok = (m['level'], m['area']) != where0
-        return {'entered': ok, 'to': w['to'], 'frames': len(g.history) - n0, 'legs': legs, 'mario': self.state(),
-                **({} if ok else {'why': 'Mario is still here (a locked door? state says why)'})}
-
     def t_collect(self, a):
-        """go and take an object (part of its behaviour name; near_x / near_z: the one nearest that point); then on,
-        a jump, a ground pound if standing under it is not enough; collected only if a counter went up or it is gone"""
+        """go straight to an object (part of its behaviour name; near_x / near_z: the one nearest that point) the way
+        the model chose (style, as goto) and say whether it was taken (a counter went up or it is gone); not taken:
+        why (above, below, a wall) for the model to choose the next move"""
         g = self.need()
         flt = str(a['name']).lower()
         objs = [o for o in g.objects() if flt in str(o['bhv']).lower() and o['bhv'] != 'bhvMario']
@@ -599,30 +462,16 @@ class Play:
         def taken():
             gone = not any(q['slot'] == o['slot'] and q['bhv'] == o['bhv'] for q in g.objects())
             return gone or g.coins > c0 or g.stars > s0
-        r = self.t_goto({'x': o['pos_x'], 'z': o['pos_z'], 'y': o['pos_y'], 'stop': 30, 'style': 'auto'})
+        r = self.t_goto({'x': o['pos_x'], 'z': o['pos_z'], 'y': o['pos_y'], 'stop': 30,
+                         'style': a.get('style', 'swim' if self.swimmer().in_water() else 'walk')})
         got = taken()
-        if not got and self.swimmer().in_water():
-            import swim
-            swim.swim_to(g, o['pos_x'], o['pos_z'], ty=o['pos_y'], stop=20.0, maxf=120, exit_out=False)
-            got = taken()
-        for _ in range(90):                 # (a long jump can end in the air: land first, the object checked each frame)
+        for _ in range(90):                 # (a long jump ends in the air: its landing played, checked each frame)
             if got or not g.mario()['action'] & 0x800:
                 break
             self.run.press(self.aim({'x': o['pos_x'], 'z': o['pos_z']}), 0, 32.0)
             got = taken()
         if not self.stack or self.stack[-1][1] != len(g.history):
             self._push('land')
-        if not got:
-            n0 = len(self.stack)
-            tries = ([([], n) for n in (1, 2, 3, 4, 6, 8, 10, 14, 18, 24)] +
-                     [(['A'], n) for n in (4, 6, 8, 10, 12, 15, 18, 22, 26, 30)] +
-                     [(['Z'], n) for n in (2, 4, 6, 10, 15, 20)])
-            for btn, n in sorted(tries, key=lambda t: t[1]):
-                self.t_walk({'x': o['pos_x'], 'z': o['pos_z'], 'frames': n, 'buttons': btn})
-                if taken():
-                    got = True
-                    break
-                self._back_to(n0)
         return {'collected': bool(got), 'target': {'name': o['bhv'], 'x': round(o['pos_x']), 'y': round(o['pos_y']),
                                                    'z': round(o['pos_z'])},
                 'coins': [c0, g.coins], 'stars': [s0, g.stars], 'goto': {k: r[k] for k in ('reached', 'why', 'frames')},
@@ -644,20 +493,31 @@ class Play:
         return {'dy': round(dy), 'dist': round(d), 'hint': hint}
 
     def t_close_dialog(self, a):
+        """while the game holds (a text box, a door, a warp's fade, the star select, a course's opening): A one frame
+        out of two where A is read (a text box, a menu), neutral otherwise; it stops the frame Mario moves freely
+        (no A pressed then: it would jump), and plays nothing when nothing holds the game"""
         g = self.need()
         import hlx
-        n = len(g.history)
-        if self._in_door():                 # (no text box will come: A pressed on and on would only waste frames)
-            self._through_door()
-        else:
-            hlx.close_dialog(g, maxf=int(a.get('frames', 400)))
-        for _ in range(120):                # (the text box gone, Mario still ends his reading animation: neutral, no jump)
-            if not hlx.blocked(g):
+        n, maxf = len(g.history), int(a.get('frames', 900))
+        for k in range(maxf):
+            m = g.mario()
+            name = self.M.NAME.get(m['action'], '')
+            menu = g.read('gDialogID', 'H') != 0xFFFF or g.read('sCurrPlayMode', 'i') != 0
+            if not (menu or hlx.blocked(g) or 'SPAWN' in name):
                 break
-            g.step((0, 0, 0, 0))
-        self._push('close_dialog')
+            mode = g.read('sCurrPlayMode', 'i')
+            # (a text read: the game frozen or Mario reading; the star select: the level changing. A text whose id
+            # stays a few frames after it closed, Mario free again, takes no A: it would be a jump)
+            reads_a = (g.read('gDialogID', 'H') != 0xFFFF and (mode != 0 or 'READING' in name)) or mode == 4
+            press = reads_a and not self._in_door() and k % 2 == 0
+            g.step((0, 0, 0x80 if press else 0, 0))
+        played = len(g.history) - n
+        if played:
+            self._push('close_dialog')
         out = self.state()
-        out['frames_played'] = len(g.history) - n
+        out['frames_played'] = played
+        if not played:
+            out['note'] = 'nothing held the game: no frame played'
         return out
 
     def t_checkpoint(self, a):
@@ -740,26 +600,26 @@ TOOLS_SPEC = [
              'keeps the best. No emulator: dozens of tries take a fraction of a second.',
      {'name': 'string', 'x': 'number', 'z': 'number', 'yaw_deg': 'number', 'spread': 'number', 'step': 'number',
       'frames': 'number', 'buttons': 'array', 'k': 'number', 'params': 'object', 'commit': 'boolean'}, []),
-    ('goto', 'To (x, z): style auto (default: chained long jumps when far, running when near, swimming once in the '
-             'water), walk, longjump or swim; y: a depth for the swim; enemies avoided; reached=true when it arrived '
-             'within stop units; legs says what it did. auto also searches the TAS moves for search seconds (default 4).',
-     {'x': 'number', 'z': 'number', 'y': 'number', 'style': 'string', 'stop': 'number', 'frames': 'number',
-      'search': 'number'}, ['x', 'z']),
+    ('goto', 'Straight to (x, z), the way you choose: style walk (default, running), longjump (chained long jumps) '
+             'or swim (in the water); stop = how near counts (units). It stops on what it meets and why says what '
+             '(a wall: max; a text; the water; the level changed). Around walls: path first.',
+     {'x': 'number', 'z': 'number', 'y': 'number', 'style': 'string', 'stop': 'number', 'frames': 'number'},
+     ['x', 'z']),
+    ('path', 'The walking path from Mario to (x, z) around the walls, nothing played: the turns to goto in order '
+             '(straight=true: no turn needed).', {'x': 'number', 'z': 'number', 'y': 'number'}, ['x', 'z']),
     ('swim', 'In the water: swim to (x, z) (y: a depth; else level) with the fastest strokes (the swim strength built '
              'up stroke after stroke to the cap of 28 u/f), steered every frame, over underwater walls; out by a '
              'water jump when the target is above the water, exit=true, or the shore blocks Mario at the surface.',
      {'x': 'number', 'z': 'number', 'y': 'number', 'stop': 'number', 'frames': 'number', 'exit': 'boolean'},
      ['x', 'z']),
-    ('collect', "Go and take an object (part of its behaviour name: 'coin', 'RedCoin', 'Star'...; near_x / near_z: "
-                "the one nearest that point); collected=true only if a counter went up or the object is gone.",
-     {'name': 'string', 'near_x': 'number', 'near_z': 'number'}, ['name']),
+    ('collect', "Go straight to an object (part of its behaviour name: 'coin', 'RedCoin', 'Star'...; near_x / near_z: "
+                "the one nearest that point; style as goto) and say whether it was taken; not taken: dy / dist / hint "
+                "say why (above Mario: a jump is yours to choose).",
+     {'name': 'string', 'near_x': 'number', 'near_z': 'number', 'style': 'string'}, ['name']),
     ('close_dialog', 'Press A (one frame out of two) until the open dialog / text box closes; state() says '
                      "'blocked' when one holds the game.", {'frames': 'number'}, []),
     ('warps', "Where the doors, pipes and paintings of this area lead (their x, y, z and destination level; to: "
               "filter by the destination's name, e.g. 'bob-omb').", {'to': 'string', 'limit': 'number'}, []),
-    ('enter', "Go through a door or into a painting by where it leads (to: part of the destination's name, e.g. "
-              "'bob-omb', 'whomp', 'upper floors'): goto there around the walls, jump into the painting, pass the star "
-              "select and opening text; entered=true once Mario moves in the new level.", {'to': 'string'}, ['to']),
     ('checkpoint', 'Remember the run so far under a name.', {'name': 'string'}, []),
     ('restore', 'Go back to a checkpoint.', {'name': 'string'}, []),
     ('undo', 'Take back the last n calls that played frames.', {'n': 'number'}, []),
@@ -775,15 +635,15 @@ SIMPLE = {
     'start': 'Start the game: Mario in the castle grounds. Call once.',
     'state': 'Where Mario is: x, y, z, action, coins, stars, frames.',
     'scan': "Find objects by name: filter='coin', 'star', 'door'. Gives their x, y, z.",
-    'goto': 'Go to x, z the fastest way (long jumps, swimming). reached=true when there.',
-    'collect': "Take an object: name='coin', 'RedCoin', 'Star'. collected=true when taken.",
+    'goto': 'Go straight to x, z. style: walk, longjump or swim. why says what stopped it.',
+    'path': 'The turns around the walls to x, z (nothing played). Then goto each.',
+    'collect': "Go to an object and take it: name='RedCoin'. collected, else why.",
     'close_dialog': 'Close a text box when state says blocked.',
     'warps': "Where the doors and paintings here lead (their destination levels).",
-    'enter': "Go into a level by name: to='bob-omb'. Walks there, jumps in the painting.",
     'undo': 'Take back the last action.',
     'export': 'Save the run as a .m64 movie: path.',
 }
-KEEP = ('reached', 'collected', 'entered', 'to', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+KEEP = ('reached', 'collected', 'found', 'straight', 'turns', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
         'error', 'here', 'warps', 'run_frames', 'note')
 MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
          'level_name')
@@ -810,7 +670,7 @@ def tool_list(simple=False):
                                                 {'type': t, 'additionalProperties': True} if t == 'object' else
                                                 {'type': t})
                                             for k, t in props.items()
-                                            if not simple or k in ('x', 'z', 'name', 'filter', 'path', 'near_x',
+                                            if not simple or k in ('x', 'z', 'name', 'filter', 'path', 'near_x', 'style',
                                                                    'near_z', 'st', 'n', 'to')}}}
             for n, d, props, req in TOOLS_SPEC if not simple or n in SIMPLE]
 
