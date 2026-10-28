@@ -55,16 +55,28 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
 - Use the speed: `try(...)` plays and takes back; `best(name or frames, x, z, spread, step, commit=true)` tries a
   move at dozens of facings in a fraction of a second and keeps the best: prefer it to guessing an angle.
   `checkpoint(name)` / `restore(name)` / `undo(n)`.
-- Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one).
+- Between levels: `state().level_name` says where Mario is ("Castle grounds", "Castle inside (ground floor)",
+  "Bob-omb Battlefield"...). `warps()` lists where this area's doors, pipes and paintings lead, with their x, y, z
+  (`warps(to="bob-omb")` filters). `enter(to="bob-omb")` does the whole way in: goto around the walls, a jump into
+  the painting (or a walk through the door), the star select and the opening text passed. From the castle grounds:
+  `goto(0, -3155)` (the front door; `close_dialog` when Lakitu or the door's text stops it), `close_dialog`, then
+  `enter(to=...)`. A door `state()` shows as `door` is gone through by `goto` / `close_dialog` on their own.
+- `goto` takes the straight line first; stuck on a wall, it takes the walking path around the walls (through open
+  doors, up stairs) and keeps the better arrival (`legs` shows `route: N turns`). No path at all is said in `legs`:
+  a jump, a locked door (star doors need stars) or another way.
+- Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one). Started from `start()`
+  (no .st), the movie begins at power-on: `frames` counts the boot too, `run_frames` the run, and in Mupen it is
+  played from power-on with `play_inputs(m64=...)`.
 
 ## Any model, any client
 
 - A small or local model: register the server with `--simple`
-  (`python agent/sm64_headless_mcp.py --simple`): 8 tools (start, state, scan, goto, collect, close_dialog, undo,
-  export), short descriptions, short answers. `goto` and `collect` do the TAS work inside (they race long jumps,
+  (`python agent/sm64_headless_mcp.py --simple`): 10 tools (start, state, scan, goto, collect, close_dialog, warps,
+  enter, undo, export), short descriptions, short answers. `goto` and `collect` do the TAS work inside (they race long jumps,
   running and a search over the TAS moves, and keep the fastest), so calling them is enough.
 - No MCP at all: `python agent/play.py run.txt` plays a file of commands, one a line (`start`, `scan door`,
-  `goto 0 1800`, `close_dialog`, `collect RedCoin`, `export run.m64`), and prints one JSON answer a line;
+  `goto 0 1800`, `close_dialog`, `warps`, `enter bob-omb`, `collect RedCoin`, `export run.m64`), and prints one
+  JSON answer a line;
   `python agent/play.py` reads them from the input. `--full` gives every tool.
 
 ## Play like a TASer, not like a walk
