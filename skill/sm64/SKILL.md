@@ -44,6 +44,10 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
   .hls from power-on, `start(power_on=true)` the console just switched on; `version` us / jp.
 - Perceive before acting: `state()`; `scan(radius)` objects by behaviour name (`bhvRedCoin`, `bhvStar`...), floors
   by height, walls; `scan(filter="coin")` every match in the level.
+  Each object says its `kind` (what it is to Mario: `coin`, `text` (read it), `pole`, `grabbable`, `damage`,
+  `bounce_top` (an enemy you stomp)...) and `danger: true` when it hurts; `path` lists the `dangers` near the way.
+  `state().act` is the act picked at the star select (a course's objects differ by act: closed cannons, missing NPCs).
+  In a cannon `state().cannon` says how to aim; `try(inputs=[...], land=true)` shows where a shot or a jump lands.
 - The tools help, you play: they tell you what is there and what went wrong, and do one thing each; the route,
   the moves and the choices are yours.
 - Act: `goto(x, z, style)` goes straight there the way you choose (`walk` = running, `longjump`, `swim`) and stops
@@ -70,12 +74,17 @@ If the tools are still missing after a restart: `claude mcp list` (or the client
 - Inside buildings and on hills the straight line often meets a wall: `path(x, z)` first (it goes through open
   doors and up stairs), then `goto` each turn with `stop=120` (a turn is only where to pass; the last one is the
   target). `path` sees the walls, not the objects: `goto` stuck says `objects_near` (a gate, a cannon). A target
-  above its floor (a floating coin, a ledge) gives `above_floor`: the walk ends under it, the way up is yours. No
-  path at all means a jump, a locked door (star doors need stars) or another way.
-- `goto`'s `why`: `arrived`; `stuck` (held in place: a wall, a slope, a gap, an object); `out of frames` (still on
-  the way: goto again or more `frames`); `died` (a pit, lava, an enemy: `restore` a checkpoint); a text; the water;
-  the level changed. `goto` / `collect` say `took` when Mario ran into a coin, a red coin or a star on the way
-  (`{"red_coins": 1}`): it counts, do not undo it. `state().red_coins` counts the red coins taken in this course.
+  above its floor (a floating coin, a ledge) gives `above_floor`: the walk ends under it, the way up is yours.
+  `floor_under`: the target stands over a floor no walk reaches (an island: a cannon, a jump from higher). No path
+  at all gives `nearest` (the turns to the reachable floor nearest the target, how far and how far below it is);
+  the rest is a jump, a locked door (star doors need stars) or another way. path refuses slopes Mario would slide
+  back down. A turn with `moving: true` stands on a moving object (a platform): its height is the one of now. path
+  walks its turns before answering and takes them back: `checked: true` means Mario really walked it.
+- `goto`'s `why`: `arrived`; `stuck` (held in place: a wall, a slope, a gap, an object); `slid back` (a slope too
+  steep to walk up); `out of frames` (still on the way: goto again or more `frames`); `died` (a pit, lava, an enemy: `restore` a checkpoint); a text; the water;
+  the level changed. Every tool that plays frames (`goto`, `collect`, `move`, `walk`, `step`, `swim`, `try`...)
+  says `took` when Mario took a coin, a red coin or a star (`{"red_coins": 1}`: it counts, do not undo it; `try`
+  says what it would take), `hurt` when he lost health (`near`: what may have hit him), `died`, and `left_level`. `state().red_coins` counts the red coins taken in this course.
   A red coin star appears only once the 8 red coins are taken (its marker shows where): look for it after that.
 - Finish: `export(path)` writes the run as a .m64 (with its .st when it started from one). Started from `start()`
   (no .st), the movie begins at power-on: `frames` counts the boot too, `run_frames` the run, and in Mupen it is
