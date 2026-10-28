@@ -39,6 +39,7 @@ def buttons_of(names):
 
 WHY = {'arrive': 'arrived', 'bloque': 'a dialog or a cutscene holds the game (close_dialog)',
        'stuck': 'stuck (a wall, a slope or a gap holds Mario)', 'frames': 'out of frames (still on the way)',
+       'slid': 'slid back (a slope too steep to walk up)',
        'brule': 'burnt (lava or fire)', 'touche': 'hit by an enemy', 'chute': 'fell (out of the level\'s floor)',
        'niveau': 'the level changed', 'max': 'max'}
 
@@ -375,9 +376,10 @@ class Play:
             why = 'in the water' if wet() else ('died' if self._dead() else WHY.get(why, why))
         else:
             self._land(tx, tz)
-            left, why, trail = int(a.get('frames', 600)), 'max', []
+            left, why, trail, slid = int(a.get('frames', 600)), 'max', [], False
             while left > 0 and not wet() and not self._dead():
                 m = g.mario()
+                slid = slid or 'SLIDE' in self.M.NAME.get(m['action'], '')
                 d = math.hypot(tx - m['pos_x'], tz - m['pos_z'])
                 trail.append((len(g.history), m['pos_x'], m['pos_z']))
                 # (near the point the stick eases off: at full speed Mario circles round a point he cannot turn into)
@@ -394,7 +396,7 @@ class Play:
                 if why != 'max':
                     break
             if why == 'max':
-                why = 'stuck' if self._stuck(trail) else 'frames'
+                why = 'slid' if slid else ('stuck' if self._stuck(trail) else 'frames')
             why = 'in the water' if wet() else ('died' if self._dead() else WHY.get(why, why))
         legs.append('%s: %s' % (style, why))
         self._push('goto')
@@ -416,6 +418,9 @@ class Play:
                      'dist': round(d)} for d, o in near if d < 300.0][:4]
             if near:
                 out['objects_near'] = near      # (path sees the walls, not the objects: one of these may be in the way)
+        elif why == WHY['slid']:
+            out['hint'] = ('Mario slid back down a slope too steep or too long to walk up: path() refuses such climbs, '
+                           'goto its turns; or another way up (a jump, a wall kick, a gentler side)')
         elif why == WHY['frames']:
             out['hint'] = 'still on the way when its frames ran out: goto again, or give more frames'
         elif why == 'died':
@@ -459,14 +464,29 @@ class Play:
         if nv.clear(p0, (tx, p0[1] if ty is None else ty, tz)):
             return {'found': True, 'straight': True, 'turns': [], 'hint': 'the straight line is open: goto(x, z)'}
         pts = nv.path(p0, (tx, ty, tz))
-        above = None
+        above, cut_off = None, []
         if not pts and ty is not None:
-            pts = nv.path(p0, (tx, None, tz))       # (no floor at the target's height: the floor under it)
-            if pts:
-                above = round(ty - pts[-1][1])
+            # no floor at the target's height: the highest floor under it that a walk reaches (a summit before the
+            # valley below it)
+            for h in sorted((h for h in nv.layers.get(nv.cell(tx, tz), ()) if h <= ty + 50.0), reverse=True):
+                pts = nv.path(p0, (tx, h, tz))
+                if pts:
+                    above = round(ty - pts[-1][1])
+                    break
+                cut_off.append(round(h))
         if not pts:
-            return {'found': False, 'hint': 'no walking path: a jump up, a gap, a locked door, or another floor first '
-                                             '(scan the floors around; warps for the doors)'}
+            near = nv.path(p0, (tx, ty, tz), nearest=True)
+            out = {'found': False, 'hint': 'no walking path: a jump up, a gap, a locked door, or another floor first '
+                                           '(scan the floors around; warps for the doors)'}
+            if near:
+                q = near[-1]
+                out['nearest'] = {'turns': [{'x': p[0], 'y': p[1], 'z': p[2]} for p in near],
+                                  'left': round(math.hypot(tx - q[0], tz - q[2])),
+                                  'below': round((ty if ty is not None else q[1]) - q[1])}
+                out['hint'] = ('no walking path all the way: nearest.turns go to the reachable floor nearest the target, '
+                               '%d units from it and %d below it; the rest is a jump, a climb or another way'
+                               % (out['nearest']['left'], out['nearest']['below']))
+            return out
         out = {'found': True, 'straight': False, 'turns': [{'x': q[0], 'y': q[1], 'z': q[2]} for q in pts],
                'hint': 'goto each turn in order (the last is the target), stop=120 for the turns on the way (they are '
                        'only where to pass); doors open as Mario walks in; objects are not in the path (scan them)'}
@@ -474,6 +494,12 @@ class Play:
             out['above_floor'] = above
             out['hint'] = ('the walk ends on the floor under the target, %d units below it (a floating coin, a '
                            'platform): the last part is yours, a jump, a climb or another way up' % above)
+        if ty is not None and cut_off:
+            # (a floor right under the target that no walk reaches: an island, a high ledge)
+            out['floor_under'] = cut_off[0]
+            out['hint'] = ('the target stands over a floor at y %d that no walk reaches (an island, a high ledge: a '
+                           'cannon, a jump from higher, another way); this path only ends below it, %d units under the '
+                           'target' % (cut_off[0], above if above is not None else 0))
         return out
 
     def t_warps(self, a):
@@ -722,7 +748,7 @@ SIMPLE = {
     'undo': 'Take back the last action.',
     'export': 'Save the run as a .m64 movie: path.',
 }
-KEEP = ('reached', 'collected', 'took', 'blocked', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
+KEEP = ('reached', 'collected', 'took', 'blocked', 'nearest', 'floor_under', 'found', 'straight', 'turns', 'above_floor', 'objects_near', 'why', 'frames', 'frames_played', 'hint', 'warning', 'kept', 'm64', 'st', 'objects',
         'error', 'here', 'warps', 'run_frames', 'note')
 MARIO = ('pos_x', 'pos_y', 'pos_z', 'action_name', 'coins', 'red_coins', 'stars', 'frames', 'blocked', 'door', 'in_water', 'level',
          'level_name')
