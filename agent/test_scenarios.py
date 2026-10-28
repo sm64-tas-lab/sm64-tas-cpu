@@ -112,6 +112,25 @@ def coins(P):
     check('up a slope too steep: goto says slid back', sl['why'].startswith('slid'), sl['why'])
 
 
+def snapshot_other_run(P):
+    import pickle, zlib
+    d = tempfile.mkdtemp()
+    f = os.path.join(d, 'x.snap')
+    m0 = P.g.mario()
+    P.call('snapshot', {'path': f})
+    snap = pickle.loads(zlib.decompress(open(f, 'rb').read()))
+    snap['pid'] = -1                     # (as if saved by another run: its pointers are not this run's)
+    open(f, 'wb').write(zlib.compress(pickle.dumps(snap)))
+    Q = S.Play()
+    Q.t_start({})
+    how = Q.g.load_snapshot(f)
+    m1 = Q.g.mario()
+    for _ in range(30):
+        Q.g.step((0, 0, 0, 0))
+    check('a snapshot from another run is played again, not loaded raw (no crash, same place)',
+          how == 'replayed' and abs(m1['pos_x'] - m0['pos_x']) < 1 and abs(m1['pos_z'] - m0['pos_z']) < 1, how)
+
+
 def cli_bom():
     d = tempfile.mkdtemp()
     f = os.path.join(d, 'run.txt')
@@ -127,6 +146,7 @@ def main():
     to_hall(P)
     into_bob(P)
     coins(P)
+    snapshot_other_run(P)
     cli_bom()
     print('%d check(s) failed, %.0f s' % (len(FAILS), time.time() - t0))
     return 1 if FAILS else 0
