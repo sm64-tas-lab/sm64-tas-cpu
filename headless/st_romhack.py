@@ -125,6 +125,8 @@ _SWEPT = set()
 
 
 def _dll_copy(src, tag, g):
+    if not winload.IS_WIN:              # Linux: every winload load is its own instance already (and /tmp is shared:
+        return src                      # no copy of a library there to load)
     d = tempfile.gettempdir()
     if tag not in _SWEPT:
         _SWEPT.add(tag)
