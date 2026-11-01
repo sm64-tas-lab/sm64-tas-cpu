@@ -612,7 +612,8 @@ end)
         f.write(lua_code)
         
     t0 = time.time()
-    p = subprocess.Popen([mupen, '--rom', rom, '--movie', movie_path, '--lua', lua])
+    import hl_paths
+    p = subprocess.Popen(hl_paths.mupen_cmd(mupen) + ['--rom', rom, '--movie', movie_path, '--lua', lua])
     
     success = False
     try:
@@ -674,7 +675,8 @@ end)
     with open(lua, 'w') as f:
         f.write(lua_code)
         
-    p = subprocess.Popen([mupen, '--rom', rom, '--lua', lua])
+    import hl_paths
+    p = subprocess.Popen(hl_paths.mupen_cmd(mupen) + ['--rom', rom, '--lua', lua])
     try:
         while time.time() - t0 < timeout:
             if os.path.exists(done):
