@@ -1,4 +1,5 @@
 import bisect
+import winload  # kernel32 / the rh_*.dll on Windows and Linux
 import json
 import os
 import struct
@@ -41,7 +42,7 @@ def _bhv_cmds(words):
 def _poke_q(g, a, v):
     import ctypes
     old = ctypes.string_at(a, 8)
-    k32 = ctypes.windll.kernel32
+    k32 = winload.kernel32()
     prot = ctypes.c_uint32()
     k32.VirtualProtect(ctypes.c_void_p(a), 8, 0x04, ctypes.byref(prot))
     g.__dict__.setdefault('_bhv_value_edits', []).append((a, old))
@@ -51,7 +52,7 @@ def _poke_q(g, a, v):
 
 def _unpoke(g):
     import ctypes
-    k32 = ctypes.windll.kernel32
+    k32 = winload.kernel32()
     for a, old in reversed(g.__dict__.pop('_bhv_value_edits', [])):
         prot = ctypes.c_uint32()
         k32.VirtualProtect(ctypes.c_void_p(a), 8, 0x04, ctypes.byref(prot))

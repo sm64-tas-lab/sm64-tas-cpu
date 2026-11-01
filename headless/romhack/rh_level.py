@@ -7,6 +7,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
+import winload  # noqa: E402  kernel32 on Windows and Linux
 import n64_lvl as N
 import rh_pairs as P
 
@@ -42,7 +43,7 @@ def mio0(data, off=0):
 
 
 def _write_ro(addr, data):
-    k32 = ctypes.windll.kernel32
+    k32 = winload.kernel32()
     old = ctypes.c_uint32()
     k32.VirtualProtect(ctypes.c_void_p(addr), len(data), 0x04, ctypes.byref(old))
     ctypes.memmove(addr, data, len(data))

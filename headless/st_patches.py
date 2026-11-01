@@ -1,4 +1,5 @@
 import ctypes
+import winload  # kernel32 / the rh_*.dll on Windows and Linux
 import json
 import os
 import struct
@@ -288,7 +289,7 @@ def _calls_to(g, fn, callee):
 
 
 def apply(g, names):
-    k32 = ctypes.windll.kernel32
+    k32 = winload.kernel32()
     done = []
     for name in names:
         for fn, callee, repl, count in KNOWN[name]['host']:
@@ -309,7 +310,7 @@ def apply(g, names):
 
 
 def _poke(a, data):
-    k32 = ctypes.windll.kernel32
+    k32 = winload.kernel32()
     old = ctypes.c_uint32()
     k32.VirtualProtect(ctypes.c_void_p(a), len(data), 0x40, ctypes.byref(old))
     ctypes.memmove(a, data, len(data))
@@ -321,4 +322,4 @@ def revert(g):
         _poke(g.base + off, data)
     g._code_orig, g.code_patches = {}, []
     g.frame_hooks = [h for h in getattr(g, 'frame_hooks', []) if not isinstance(h, ObjectEdits)]
-    ctypes.windll.kernel32.FlushInstructionCache(ctypes.windll.kernel32.GetCurrentProcess(), None, 0)
+    winload.kernel32().FlushInstructionCache(winload.kernel32().GetCurrentProcess(), None, 0)

@@ -1,4 +1,5 @@
 import ctypes
+import winload  # kernel32 / the rh_*.dll on Windows and Linux
 import json
 import os
 import shutil
@@ -117,14 +118,7 @@ def detect(rd):
 
 
 def _pid_alive(pid):
-    k32 = ctypes.windll.kernel32
-    h = k32.OpenProcess(0x1000, False, pid)
-    if not h:
-        return False
-    code = ctypes.c_uint32()
-    ok = k32.GetExitCodeProcess(h, ctypes.byref(code))
-    k32.CloseHandle(h)
-    return bool(ok) and code.value == 259
+    return winload.pid_alive(pid)
 
 
 _SWEPT = set()
@@ -153,7 +147,7 @@ def _apply_camwalls(g):
     if len(sites) != 1:
         raise RuntimeError(f'camera_walls4: {len(sites)} calls in rotate_camera_around_walls (expected 1)')
     tmp = _dll_copy(DLLCAM, 'rh_camera4', g)
-    lib = ctypes.CDLL(tmp)
+    lib = winload.load_library(tmp)
     saved = []
     site = g.base + sites[0]
     saved.append((site, ctypes.string_at(site, 5)))
@@ -167,7 +161,7 @@ def _apply_camwalls(g):
 
 
 def _alloc_near(base, size):
-    k32 = ctypes.windll.kernel32
+    k32 = winload.kernel32()
     k32.VirtualAlloc.restype = ctypes.c_void_p
     k32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_uint32]
     for k in range(1, 4096):
@@ -213,7 +207,7 @@ def _apply_cam8(g, rd):
     import n64mem as NM
     import st_patches as SP
     tmp = _dll_copy(DLLCAM8, 'rh_camera8', g)
-    lib = ctypes.CDLL(tmp)
+    lib = winload.load_library(tmp)
     mem = lambda t: {m[3]: m[1] for m in NM.members(NM.find_type(t))}
     ctl, pcs, ms = mem('Controller'), mem('PlayerCameraState'), mem('MarioState')
     a = g.addr
@@ -255,7 +249,7 @@ class _Globals(ctypes.Structure):
 
 
 def _write_code(addr, data):
-    k32 = ctypes.windll.kernel32
+    k32 = winload.kernel32()
     old = ctypes.c_uint32()
     k32.VirtualProtect(ctypes.c_void_p(addr), len(data), 0x40, ctypes.byref(old))
     ctypes.memmove(addr, data, len(data))
@@ -333,7 +327,7 @@ def _island_lib(g):
         return lib
     import n64mem as NM
     tmp = _dll_copy(DLLISL, 'rh_island', g)
-    lib = ctypes.CDLL(tmp)
+    lib = winload.load_library(tmp)
     ob = {m[3]: m[1] for m in NM.members(NM.find_type('Object'))}
     ms = {m[3]: m[1] for m in NM.members(NM.find_type('MarioState'))}
     a = g.addr
@@ -783,7 +777,7 @@ def apply(g, name='bounds4', rd=None):
         return g._rh_patched_names
     import n64mem as NM
     tmp = _dll_copy(DLL4, 'rh_collision4', g)
-    lib = ctypes.CDLL(tmp)
+    lib = winload.load_library(tmp)
     ob = {m[3]: m[1] for m in NM.members(NM.find_type('Object'))}
     a = g.addr
     gl = _Globals(a('gStaticSurfacePartition'), a('gDynamicSurfacePartition'), a('gCheckingSurfaceCollisionsForCamera'),
