@@ -32,6 +32,7 @@ BUILD = os.environ.get('WINLOAD_BUILD') or os.path.join(HERE, '_build')
 
 _lib = None
 _lib_lock = threading.Lock()
+_FUNCS = {}                     # handle -> the WeakSet of its PEFunctions (an unload, by handle too, invalidates them)
 
 
 class _Fault(ctypes.Structure):
@@ -121,6 +122,8 @@ for _t in (ctypes.c_byte, ctypes.c_ubyte, ctypes.c_short, ctypes.c_ushort, ctype
            ctypes.c_int64, ctypes.c_uint64, ctypes.c_bool, ctypes.c_char, ctypes.c_wchar):
     _INT_TYPES[_t] = _t
 _SIMPLE = ctypes._SimpleCData
+# Windows' long is 32 bits (LLP64), Linux's 64: ctypes.c_long / c_ulong in a game DLL's signature mean the Windows ones
+_WIN_LONG = {ctypes.c_long: True, ctypes.c_ulong: False} if ctypes.sizeof(ctypes.c_long) == 8 else {}
 
 
 def _addr_of(obj):
@@ -141,9 +144,16 @@ def _slot(a, t):
             v = a.value if isinstance(a, _SIMPLE) else a
             if isinstance(v, bytes):
                 v = v[0]
+            elif isinstance(v, str):                          # (c_wchar: a 16-bit character on Windows)
+                v = ord(v)
+            if t in _WIN_LONG:
+                return int(v) & 0xFFFFFFFF
             return int(v) & _M64
         if isinstance(t, type) and issubclass(t, ctypes.Structure) and isinstance(a, ctypes.Structure):
             return _struct_slot(a)
+        if isinstance(a, str):
+            raise ctypes.ArgumentError('a str for a pointer argument would be a 32-bit wchar_t* here (Windows: 16-bit): '
+                                       'pass bytes')
         return _addr_of(a)                                  # pointers, c_void_p, c_char_p, arrays, byref ...
     if a is None:
         return 0
@@ -181,11 +191,16 @@ def _result(rax, xmm, t):
         return struct.unpack('<f', struct.pack('<I', xmm & 0xFFFFFFFF))[0]
     if t is ctypes.c_double:
         return struct.unpack('<d', struct.pack('<Q', xmm))[0]
+    if t in _WIN_LONG:                                     # 32-bit long: sign-extended for c_long
+        v = rax & 0xFFFFFFFF
+        return v - (1 << 32) if _WIN_LONG[t] and v >> 31 else v
     if t in _INT_TYPES:
         n = ctypes.sizeof(t)
         v = rax & ((1 << (8 * n)) - 1)
         if t is ctypes.c_bool:
             return bool(v & 0xFF)
+        if t is ctypes.c_wchar:
+            return chr(v & 0xFFFF)
         return t(v).value
     if t is ctypes.c_void_p:
         return rax or None
@@ -222,7 +237,7 @@ class PEFunction:
         self.argtypes = None
         self.restype = ctypes.c_int
         self.errcheck = None
-        self._busy = False                                  # the fast path's buffers are in use (another thread)
+        self._lock0 = threading.Lock()                     # the fast path's buffers (another thread: the slow path)
         self._rax0 = ctypes.c_uint64()
         self._f0 = _Fault()
         self._p0 = (ctypes.c_void_p(addr), ctypes.c_void_p(ctypes.addressof(self._rax0)),
@@ -234,15 +249,17 @@ class PEFunction:
         return ctypes.c_void_p(self._addr)
 
     def __call__(self, *args):
-        if not args and not self.argtypes and not self._busy and self.errcheck is None:
-            self._busy = True                               # no arguments (sm64_update): preallocated buffers
-            try:
+        if not self._addr:
+            raise OSError('%s: its library was closed' % self.__name__)
+        rt = self.restype
+        if not args and not self.argtypes and self.errcheck is None and rt not in (ctypes.c_float, ctypes.c_double) \
+                and self._lock0.acquire(False):
+            try:                                            # no arguments (sm64_update): preallocated buffers
                 if self._call0(*self._p0):
                     raise _fault_error(self._f0, self.__name__)
-                rt = self.restype
                 return None if rt is None else _result(self._rax0.value, 0, rt)
             finally:
-                self._busy = False
+                self._lock0.release()
         at = self.argtypes
         if at is not None:
             if len(args) != len(at):
@@ -278,6 +295,8 @@ class PELibrary:
             raise OSError(err.value.decode(errors='replace'))
         self._handle = base
         self._funcs = {}
+        import weakref
+        _FUNCS[base] = weakref.WeakSet()
 
     def _sym(self, name):
         a = native().wl_sym(self._handle, name.encode()) if self._handle else None
@@ -291,6 +310,7 @@ class PELibrary:
         f = self._funcs.get(name)
         if f is None:
             f = self._funcs[name] = PEFunction(self._sym(name), name)
+            _FUNCS[self._handle].add(f)
         return f
 
     def __getitem__(self, name):
@@ -301,7 +321,8 @@ class PELibrary:
 
     def close(self):
         if self._handle:
-            native().wl_free(self._handle)
+            _unload(self._handle)
+            self._funcs.clear()
             self._handle = None
 
     def __repr__(self):
@@ -322,6 +343,9 @@ def CFUNCTYPE(restype, *argtypes):
             return proto(a)
         f = PEFunction(a, 'fn_0x%x' % a)
         f.restype, f.argtypes = restype, list(argtypes)
+        ws = _FUNCS.get(native().wl_module_of(a))
+        if ws is not None:
+            ws.add(f)
         return f
     return make
 
@@ -352,7 +376,14 @@ def free_library(handle_or_lib):
         ok = bool(handle_or_lib._handle)
         handle_or_lib.close()
         return ok
-    return bool(native().wl_free(ctypes.c_void_p(handle_or_lib)))
+    return _unload(int(handle_or_lib))
+
+
+def _unload(handle):
+    """unmaps an image; the functions taken from it fail from then on (they must not run what comes next there)"""
+    for f in list(_FUNCS.pop(handle, ())):
+        f._addr = 0
+    return bool(native().wl_free(ctypes.c_void_p(handle)))
 
 
 def protect(addr, size, prot):

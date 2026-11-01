@@ -532,6 +532,18 @@ static MS int s_printf(const char *fmt, ...) {
 }
 static MS int s_vprintf(const char *fmt, __builtin_ms_va_list ap) { return s_vfprintf(iob_fake + 48, fmt, ap); }
 static MS int s_vsnprintf(char *b, size_t n, const char *fmt, __builtin_ms_va_list ap) { return ms_vformat(b, n, fmt, ap); }
+/* msvcrt's _snprintf / _vsnprintf: -1 when the output was cut (C99's snprintf gives the length it needed) */
+static MS int s_ms_vsnprintf(char *b, size_t n, const char *fmt, __builtin_ms_va_list ap) {
+    int r = ms_vformat(b, n, fmt, ap);
+    return (size_t)r >= n ? -1 : r;
+}
+static MS int s_ms_snprintf(char *b, size_t n, const char *fmt, ...) {
+    __builtin_ms_va_list ap;
+    __builtin_ms_va_start(ap, fmt);
+    int r = s_ms_vsnprintf(b, n, fmt, ap);
+    __builtin_ms_va_end(ap);
+    return r;
+}
 static MS int s_snprintf(char *b, size_t n, const char *fmt, ...) {
     __builtin_ms_va_list ap;
     __builtin_ms_va_start(ap, fmt);
@@ -680,7 +692,7 @@ static MS void k_Sleep(uint32_t ms) { usleep((useconds_t)ms * 1000); }
 static MS int k_IsDebuggerPresent(void) { return 0; }
 static MS int k_IsProcessorFeaturePresent(uint32_t f) {
     switch (f) {
-    case 6: case 10: case 13: case 17: case 23: return 1;   /* XMMI, XMMI64, SSE3, NX, FASTFAIL */
+    case 6: case 10: case 12: case 13: case 23: return 1;   /* XMMI, XMMI64, NX, SSE3, FASTFAIL */
     default: return 0;
     }
 }
@@ -726,7 +738,13 @@ static MS int k_TlsSetValue(uint32_t i, void *v) { if (i >= WL_TLS) return 0; t_
 /* heaps: one heap, the process allocator */
 static MS void *k_GetProcessHeap(void) { return (void *)0x484541500000ULL; }
 static MS void *k_HeapAlloc(void *h, uint32_t fl, size_t n) { (void)h; return (fl & 8) ? calloc(1, n ? n : 1) : malloc(n ? n : 1); }
-static MS void *k_HeapReAlloc(void *h, uint32_t fl, void *p, size_t n) { (void)h; (void)fl; return realloc(p, n); }
+static MS void *k_HeapReAlloc(void *h, uint32_t fl, void *p, size_t n) {
+    (void)h;
+    size_t old = p ? malloc_usable_size(p) : 0;
+    void *q = realloc(p, n ? n : 1);
+    if (q && (fl & 8) && n > old) memset((uint8_t *)q + old, 0, n - old);       /* HEAP_ZERO_MEMORY: the grown part */
+    return q;
+}
 static MS int k_HeapFree(void *h, uint32_t fl, void *p) { (void)h; (void)fl; free(p); return 1; }
 static MS size_t k_HeapSize(void *h, uint32_t fl, void *p) { (void)h; (void)fl; return malloc_usable_size(p); }
 
@@ -742,6 +760,24 @@ static int prot_from_win(uint32_t p) {
     default: return PROT_READ | PROT_WRITE;
     }
 }
+/* the reservations VirtualAlloc made (VirtualFree MEM_RELEASE gets size 0: the whole reservation) */
+#define WL_RES 4096
+static struct { uintptr_t a; size_t n; } g_res[WL_RES];
+static pthread_mutex_t g_res_lock = PTHREAD_MUTEX_INITIALIZER;
+static void res_add(void *a, size_t n) {
+    pthread_mutex_lock(&g_res_lock);
+    for (int i = 0; i < WL_RES; i++)
+        if (!g_res[i].a) { g_res[i].a = (uintptr_t)a; g_res[i].n = n; break; }
+    pthread_mutex_unlock(&g_res_lock);
+}
+static size_t res_take(void *a) {
+    size_t n = 0;
+    pthread_mutex_lock(&g_res_lock);
+    for (int i = 0; i < WL_RES; i++)
+        if (g_res[i].a == (uintptr_t)a) { n = g_res[i].n; g_res[i].a = 0; break; }
+    pthread_mutex_unlock(&g_res_lock);
+    return n;
+}
 static MS void *k_VirtualAlloc(void *addr, size_t n, uint32_t type, uint32_t prot) {
     if (!(type & 0x2000) && !(type & 0x1000)) return NULL;
     if (addr && !(type & 0x2000)) {                 /* commit inside a reservation */
@@ -752,15 +788,19 @@ static MS void *k_VirtualAlloc(void *addr, size_t n, uint32_t type, uint32_t pro
     int fl = MAP_PRIVATE | MAP_ANONYMOUS | (addr ? MAP_FIXED_NOREPLACE : 0);
     void *p = mmap(addr, n, (type & 0x1000) ? prot_from_win(prot) : PROT_NONE, fl, -1, 0);
     if (p == MAP_FAILED) { t_last_error = 8; return NULL; }
+    res_add(p, n);
     return p;
 }
 static MS int k_VirtualFree(void *a, size_t n, uint32_t type) {
-    if (type & 0x8000) {                            /* MEM_RELEASE: the size is the reservation's, unknown here */
-        wl_module *m = wl_find_module_by_addr((uintptr_t)a);
-        (void)m;
-        return munmap(a, n ? n : 4096) == 0;
+    if (type & 0x8000) {                            /* MEM_RELEASE (size 0): the whole reservation */
+        size_t r = res_take(a);
+        if (!r) { t_last_error = 487; return 0; }
+        return munmap(a, r) == 0;
     }
-    return madvise(a, n, MADV_DONTNEED) == 0;
+    /* MEM_DECOMMIT: the pages' contents dropped and their access refused, as on Windows */
+    uintptr_t s0 = (uintptr_t)a & ~(uintptr_t)0xFFF;
+    size_t len = (((uintptr_t)a + n + 0xFFF) & ~(uintptr_t)0xFFF) - s0;
+    return madvise((void *)s0, len, MADV_DONTNEED) == 0 && mprotect((void *)s0, len, PROT_NONE) == 0;
 }
 /* the Windows protection of the page holding a (from /proc/self/maps), 0 when unmapped */
 static uint32_t win_prot_of(uintptr_t a) {
@@ -793,14 +833,21 @@ static MS size_t k_VirtualQuery(const void *a, MBI *mbi, size_t n) {
     if (n < sizeof(MBI)) return 0;
     memset(mbi, 0, sizeof *mbi);
     uintptr_t p = (uintptr_t)a & ~(uintptr_t)0xFFF;
+    uint32_t prot = win_prot_of(p);
     wl_module *m = wl_find_module_by_addr(p);
     mbi->base = (void *)p;
+    mbi->size = 4096;
+    if (!prot) {                                    /* not mapped: a free region */
+        mbi->state = 0x10000;
+        mbi->prot = 0x01;
+        return sizeof(MBI);
+    }
     mbi->alloc_base = m ? (void *)m->base : (void *)p;
-    mbi->alloc_prot = 0x40;
-    mbi->size = m ? (size_t)(m->base + m->size - (uint8_t *)p) : 4096;
-    mbi->state = 0x1000;
-    mbi->prot = 0x40;
-    mbi->type = m ? 0x1000000 : 0x20000;
+    mbi->alloc_prot = prot;
+    if (m) mbi->size = (size_t)(m->base + m->size - (uint8_t *)p);
+    mbi->state = 0x1000;                            /* MEM_COMMIT */
+    mbi->prot = prot;
+    mbi->type = m ? 0x1000000 : 0x20000;            /* MEM_IMAGE / MEM_PRIVATE */
     return sizeof(MBI);
 }
 static MS int k_FlushInstructionCache(void *p, void *a, size_t n) { (void)p; (void)a; (void)n; return 1; }
@@ -873,8 +920,8 @@ static const shim crt_shims[] = {
     S("__std_type_info_destroy_list", s_noop), S("___lc_codepage_func", s_zero), S("___mb_cur_max_func", s_one),
     S("localeconv", s_localeconv), S("strerror", s_strerror),
     S("__iob_func", s_iob_func), S("__acrt_iob_func", s_acrt_iob_func), S("printf", s_printf), S("fprintf", s_fprintf),
-    S("vfprintf", s_vfprintf), S("vprintf", s_vprintf), S("vsnprintf", s_vsnprintf), S("_vsnprintf", s_vsnprintf),
-    S("snprintf", s_snprintf), S("_snprintf", s_snprintf), S("sprintf", s_sprintf),
+    S("vfprintf", s_vfprintf), S("vprintf", s_vprintf), S("vsnprintf", s_vsnprintf), S("_vsnprintf", s_ms_vsnprintf),
+    S("snprintf", s_snprintf), S("_snprintf", s_ms_snprintf), S("sprintf", s_sprintf),
     S("__stdio_common_vfprintf", s_common_vfprintf), S("__stdio_common_vsprintf", s_common_vsprintf),
     S("puts", s_puts), S("putchar", s_putchar), S("fputs", s_fputs), S("fputc", s_fputc), S("putc", s_fputc),
     S("fwrite", s_fwrite), S("fread", s_fread), S("fflush", s_fflush), S("fopen", s_fopen), S("fclose", s_fclose),
@@ -942,8 +989,10 @@ static void *shim_lookup(const char *dll, const char *name) {
 
 static MS void *k_GetModuleHandleA(const char *name) {
     if (!name) return FAKE_EXE;
-    const char *b = strrchr(name, '\\');
-    b = b ? b + 1 : name;
+    char nm[260];                                   /* (a copy: a bad pointer faults here, never under the lock) */
+    snprintf(nm, sizeof nm, "%s", name);
+    const char *b = strrchr(nm, '\\');
+    b = b ? b + 1 : nm;
     if (is_k32_dll(b) || !strcasecmp(b, "kernel32")) return FAKE_K32;
     if (is_crt_dll(b) || !strcasecmp(b, "msvcrt")) return FAKE_CRT;
     void *r = NULL;
@@ -1009,16 +1058,23 @@ EXPORT void *wl_load(const char *path, uint64_t want, char *err, size_t errn) {
     wl_module *mod = NULL;
     if (fsz < 0x200 || f[0] != 'M' || f[1] != 'Z') { set_err(err, errn, "%s is not a PE file", path); goto fail; }
     uint32_t pe = rd32(f + 0x3C);
-    if (pe + 24 > fsz || memcmp(f + pe, "PE\0\0", 4)) { set_err(err, errn, "%s: no PE header", path); goto fail; }
+    if ((size_t)pe + 24 > fsz || memcmp(f + pe, "PE\0\0", 4)) { set_err(err, errn, "%s: no PE header", path); goto fail; }
     uint16_t machine = rd16(f + pe + 4), nsec = rd16(f + pe + 6), optsz = rd16(f + pe + 20);
+    if ((size_t)pe + 24 + optsz + 40 * (size_t)nsec > fsz || optsz < 112) {
+        set_err(err, errn, "%s: truncated PE headers", path);
+        goto fail;
+    }
     const uint8_t *opt = f + pe + 24;
     if (machine != 0x8664 || rd16(opt) != 0x20B) { set_err(err, errn, "%s is not a 64-bit x86 PE", path); goto fail; }
     uint64_t pref = rd64(opt + 24);
     uint32_t salign = rd32(opt + 32), imgsz = rd32(opt + 56), hdrsz = rd32(opt + 60);
     uint32_t ndirs = rd32(opt + 108);
+    if (ndirs > (optsz - 112u) / 8) ndirs = (optsz - 112u) / 8;      /* the directories the optional header holds */
     const uint8_t *dirs = opt + 112;
     const uint8_t *sec = opt + optsz;
     size_t size = ((size_t)imgsz + 0xFFF) & ~(size_t)0xFFF;
+    if (!imgsz || hdrsz > imgsz) { set_err(err, errn, "%s: bad image size", path); goto fail; }
+#define IN_IMG(rva, len) ((uint64_t)(rva) + (uint64_t)(len) <= (uint64_t)size)
 
     uint64_t at = want ? want : pref;
     img = mmap((void *)(uintptr_t)at, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
@@ -1032,25 +1088,32 @@ EXPORT void *wl_load(const char *path, uint64_t want, char *err, size_t errn) {
     for (unsigned i = 0; i < nsec; i++) {
         const uint8_t *s = sec + 40 * i;
         uint32_t vsz = rd32(s + 8), va = rd32(s + 12), rsz = rd32(s + 16), rptr = rd32(s + 20);
-        if ((size_t)va + (vsz > rsz ? vsz : rsz) > size && (size_t)va + vsz > size) {
-            set_err(err, errn, "%s: section %u outside the image", path, i);
+        uint32_t n = rsz < vsz || vsz == 0 ? rsz : vsz;       /* the bytes the file gives */
+        if (!IN_IMG(va, vsz) || !IN_IMG(va, n) || (n && (uint64_t)rptr + n > fsz)) {
+            set_err(err, errn, "%s: section %u outside the image or the file", path, i);
             goto fail;
         }
-        uint32_t n = rsz < vsz || vsz == 0 ? rsz : vsz;
-        if (n && rptr + (size_t)n <= fsz) memcpy(img + va, f + rptr, n);
+        if (n) memcpy(img + va, f + rptr, n);
     }
 
     /* base relocations */
     int64_t delta = (int64_t)((uintptr_t)img - pref);
-    if (delta && ndirs > 5) {
-        uint32_t rva = rd32(dirs + 8 * 5), rsz = rd32(dirs + 8 * 5 + 4);
-        if (!rva) { set_err(err, errn, "%s: cannot load at 0x%llx and has no relocations", path, (unsigned long long)pref); goto fail; }
+    if (delta) {
+        uint32_t rva = ndirs > 5 ? rd32(dirs + 8 * 5) : 0, rsz = ndirs > 5 ? rd32(dirs + 8 * 5 + 4) : 0;
+        if (!rva || !IN_IMG(rva, rsz)) {
+            set_err(err, errn, "%s: cannot load at 0x%llx and has no usable relocations", path, (unsigned long long)pref);
+            goto fail;
+        }
         uint8_t *p = img + rva, *end = img + rva + rsz;
         while (p + 8 <= end) {
             uint32_t page = rd32(p), bsz = rd32(p + 4);
-            if (bsz < 8) break;
+            if (bsz < 8 || p + bsz > end) break;
             for (uint32_t k = 8; k + 2 <= bsz; k += 2) {
                 uint16_t e = rd16(p + k);
+                if ((e >> 12) && !IN_IMG((uint64_t)page + (e & 0xFFF), 8)) {
+                    set_err(err, errn, "%s: relocation outside the image", path);
+                    goto fail;
+                }
                 uint8_t *t = img + page + (e & 0xFFF);
                 switch (e >> 12) {
                 case 0: break;
@@ -1071,13 +1134,20 @@ EXPORT void *wl_load(const char *path, uint64_t want, char *err, size_t errn) {
     snprintf(mod->name, sizeof mod->name, "%s", bn ? bn + 1 : path);
 
     /* exports */
-    if (ndirs > 0 && rd32(dirs)) {
+    if (ndirs > 0 && rd32(dirs) && IN_IMG(rd32(dirs), 40)) {
         uint8_t *ed = img + rd32(dirs);
-        uint32_t nnames = rd32(ed + 24), afn = rd32(ed + 28), anames = rd32(ed + 32), aords = rd32(ed + 36);
+        uint32_t nfn = rd32(ed + 20), nnames = rd32(ed + 24), afn = rd32(ed + 28), anames = rd32(ed + 32),
+                 aords = rd32(ed + 36);
+        if (!IN_IMG(afn, 4 * (uint64_t)nfn) || !IN_IMG(anames, 4 * (uint64_t)nnames) || !IN_IMG(aords, 2 * (uint64_t)nnames)) {
+            set_err(err, errn, "%s: export table outside the image", path);
+            goto fail;
+        }
         mod->exports = calloc(nnames ? nnames : 1, sizeof *mod->exports);
         for (uint32_t i = 0; i < nnames; i++) {
-            const char *nm = (const char *)img + rd32(img + anames + 4 * i);
+            uint32_t nrva = rd32(img + anames + 4 * i);
             uint16_t o = rd16(img + aords + 2 * i);
+            if (o >= nfn || !IN_IMG(nrva, 1) || !memchr(img + nrva, 0, size - nrva)) continue;
+            const char *nm = (const char *)img + nrva;
             mod->exports[mod->nexports].name = nm;
             mod->exports[mod->nexports].rva = rd32(img + afn + 4 * o);
             mod->nexports++;
@@ -1088,9 +1158,27 @@ EXPORT void *wl_load(const char *path, uint64_t want, char *err, size_t errn) {
     /* imports: shims, or a named trap */
     if (ndirs > 1 && rd32(dirs + 8)) {
         size_t nimp = 0;
-        for (uint8_t *d = img + rd32(dirs + 8); rd32(d + 12); d += 20) {
-            uint8_t *t = img + (rd32(d) ? rd32(d) : rd32(d + 16));
-            for (; rd64(t); t += 8) nimp++;
+        for (uint8_t *d = img + rd32(dirs + 8);; d += 20) {
+            if (!IN_IMG(d - img, 20)) { set_err(err, errn, "%s: import table outside the image", path); goto fail; }
+            if (!rd32(d + 12)) break;
+            uint32_t names = rd32(d) ? rd32(d) : rd32(d + 16);
+            if (!IN_IMG(rd32(d + 12), 1) || !memchr(img + rd32(d + 12), 0, size - rd32(d + 12))) {
+                set_err(err, errn, "%s: an import's DLL name is outside the image", path);
+                goto fail;
+            }
+            for (uint8_t *t = img + names;; t += 8) {
+                if (!IN_IMG(t - img, 8) || !IN_IMG(rd32(d + 16) + (t - img - names), 8)) {
+                    set_err(err, errn, "%s: an import list is outside the image", path);
+                    goto fail;
+                }
+                uint64_t ent = rd64(t);
+                if (!ent) break;
+                if (!(ent >> 63) && (!IN_IMG((uint32_t)ent, 3) || !memchr(img + (uint32_t)ent + 2, 0, size - (uint32_t)ent - 2))) {
+                    set_err(err, errn, "%s: an import's name is outside the image", path);
+                    goto fail;
+                }
+                nimp++;
+            }
         }
         mod->stubs_size = ((nimp * 32) + 0xFFF) & ~(size_t)0xFFF;
         if (mod->stubs_size) {
