@@ -30,3 +30,4 @@ headless/_st_index.json
 
 # winload: the compiled Linux loader of the game DLLs (headless/winload.c), built on first use
 headless/_build/
+.venv/

@@ -5,3 +5,4 @@
 *.npy binary
 *.bin binary
 *.ptx binary
+*.sh text eol=lf

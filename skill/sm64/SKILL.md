@@ -12,7 +12,8 @@ Two MCP servers:
 
 ## 1. Setup (only when the `sm64-headless` tools are not available)
 
-Do it yourself, step by step, and tell the user what you are doing. Windows 10/11 x64 only.
+Do it yourself, step by step, and tell the user what you are doing. Windows 10/11 x64, or Linux x86-64 (the notes
+"Linux:" below; the game DLLs run there through headless/winload.c, bit for bit as on Windows).
 
 1. Check the prerequisites: `git --version` and a 64-bit Python 3.9 or newer
    (`py -3 -c "import sys; print(sys.version, sys.maxsize > 2**32)"` or `python ...`). If one is missing, tell the
@@ -28,7 +29,10 @@ Do it yourself, step by step, and tell the user what you are doing. Windows 10/1
    It installs numpy and lz4, unlocks the DLLs, fetches the decompilation's sources (code headers only), and
    registers `sm64-headless` (Claude Code with this skill, Gemini CLI, `mcp.json` for other clients). Read its
    output: "is not the original Super Mario 64" means a wrong or modified ROM; ask for another dump.
-5. Check it: `python sm64-tas-cpu/agent/sm64_headless_mcp.py --demo` must print a start, a scan, moves and an export.
+   Linux: `sm64-tas-cpu/INSTALL.sh --yes --rom-us "<ROM>"` instead (it needs `python3` 3.9+ and `gcc`: tell the user to
+   install them with their package manager if missing; it makes `sm64-tas-cpu/.venv` and runs install.py with it).
+5. Check it: `python sm64-tas-cpu/agent/sm64_headless_mcp.py --demo` must print a start, a scan, moves and an export
+   (Linux: `sm64-tas-cpu/.venv/bin/python` instead of `python`).
 6. Optional, the real emulator: `git clone -b public https://github.com/sm64-tas-lab/sm64-mupen-bridge` beside it, then
    `powershell -ExecutionPolicy Bypass -File sm64-mupen-bridge/install.ps1 -Yes -NoHeadless -Rom "<ROM>"`
    (it finds Mupen64-rr-lua or downloads the official release, and registers the `sm64` server).

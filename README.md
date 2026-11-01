@@ -33,6 +33,20 @@ sources (code headers only, from n64decomp/sm64), asks for Mupen64-rr-lua (optio
 Check it with `python agent/sm64_headless_mcp.py --demo`, then ask your AI something like *"start Super Mario 64 with
 sm64-headless, scan around Mario and long jump toward the castle"*.
 
+## Install on Linux
+
+You need **Linux x86-64**, **python3** 3.9+, **gcc** (the game DLLs are loaded by `headless/winload.c`, built on first
+use) and **your own Super Mario 64 (USA) ROM**:
+
+```
+git clone https://github.com/sm64-tas-lab/sm64-tas-cpu
+sm64-tas-cpu/INSTALL.sh
+```
+
+It makes `.venv/` (numpy, lz4), then runs the same `install.py`. The game is the same DLL as on Windows, run as it is:
+its memory matches Windows' after every frame (`python headless/winload_check.py` writes the per-frame checksums to
+compare). Mupen64-rr-lua, to replay the exported movies, is a Windows program: under Wine.
+
 **Why the DLLs are locked:** they are the game itself compiled, so they hold Nintendo's data and are never shipped in
 clear. The repo carries `*.dll.locked` files (the way Wafel ships its libsm64 builds): they are encrypted with a key
 derived from the original ROM, so only your own dump opens them (`headless/rom_lock.py`). A wrong or modified ROM is
