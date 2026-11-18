@@ -27,5 +27,18 @@ LAB = os.environ.get('TAS_LAB') or BASE
 DATA = os.environ.get('TAS_DATA') or os.path.join(LAB, 'data')
 
 
+def mupen_cmd(exe=None):
+    """the command starting Mupen (its arguments follow): [exe], or [wine, exe] for the Windows program on Linux"""
+    exe = exe or MUPEN
+    if os.name == 'nt' or not exe.lower().endswith('.exe'):
+        return [exe]
+    import shutil
+    w = os.environ.get('WINE') or shutil.which('wine') or shutil.which('wine64')
+    if not w:
+        raise FileNotFoundError('Mupen64-rr-lua is a Windows program: on Linux it runs under Wine (install "wine")')
+    os.environ.setdefault('WINEDEBUG', '-all')
+    return [w, exe]
+
+
 def lab(*parts):
     return os.path.join(LAB, *parts)

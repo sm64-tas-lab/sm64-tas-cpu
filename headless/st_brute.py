@@ -12,6 +12,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import winload  # noqa: E402  calls into the game DLL by address (CFUNCTYPE), Windows and Linux
 
 STICK_CACHE = os.path.join(HERE, '_stick_exact.npz')
 BTN_A, BTN_B, BTN_Z = 0x80, 0x40, 0x20
@@ -42,8 +43,8 @@ class Stick:
         t = NM.find_type('Controller')
         cm = {m[3]: m[1] for m in NM.members(t)}
         buf = ctypes.create_string_buffer(NM.layout(t)[2] + 64)
-        adj = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(g.base + g.syms['adjust_analog_stick'])
-        atan2s = ctypes.CFUNCTYPE(ctypes.c_short, ctypes.c_float, ctypes.c_float)(g.base + g.syms['atan2s'])
+        adj = winload.CFUNCTYPE(None, ctypes.c_void_p)(g.base + g.syms['adjust_analog_stick'])
+        atan2s = winload.CFUNCTYPE(ctypes.c_short, ctypes.c_float, ctypes.c_float)(g.base + g.syms['atan2s'])
         rel = np.zeros((256, 256), np.int32)
         mag = np.zeros((256, 256), np.float32)
         a = ctypes.addressof(buf)

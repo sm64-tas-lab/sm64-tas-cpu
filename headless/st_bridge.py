@@ -198,7 +198,7 @@ def make_st(inputs, out_path, timeout=900, log=print, offset=0):
     lua = os.path.join(tmp, 'save.lua')
     open(lua, 'w').write(LUA % (len(inputs), offset, st_tmp.replace('\\', '/'), done.replace('\\', '/')))
     t0 = time.time()
-    p = subprocess.Popen([MUPEN, '--rom', ROM, '--movie', m64, '--lua', lua])
+    p = subprocess.Popen(hl_paths.mupen_cmd(MUPEN) + ['--rom', ROM, '--movie', m64, '--lua', lua])
     try:
         while time.time() - t0 < timeout:
             if os.path.exists(done) and os.path.exists(st_tmp) and os.path.getsize(st_tmp) > 0:

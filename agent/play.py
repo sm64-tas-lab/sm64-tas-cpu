@@ -34,6 +34,13 @@ def value(v):
         pass
     if v.startswith('[') and v.endswith(']'):           # ([A,B]: the shell took the quotes away)
         return [w.strip().strip('"').strip("'") for w in v[1:-1].split(',') if w.strip()]
+    if v.startswith('{') and v.endswith('}'):           # ({cycles:2}: json.loads wants quoted keys)
+        out = {}
+        for pair in v[1:-1].split(','):
+            if ':' in pair:
+                k, x = pair.split(':', 1)
+                out[k.strip().strip('"').strip("'")] = value(x.strip())
+        return out
     return v
 
 

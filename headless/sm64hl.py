@@ -1,4 +1,5 @@
 import ctypes, os, shutil, struct, threading, itertools
+import winload  # the game DLL on Windows (ctypes) and on Linux (winload.c: the same machine code, Windows' FPU state)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -98,9 +99,7 @@ STALE_AGE = 60.0
 
 def _free_library(handle):
     try:
-        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
-        k32.FreeLibrary.argtypes = [ctypes.c_void_p]
-        return bool(k32.FreeLibrary(ctypes.c_void_p(handle)))
+        return winload.free_library(handle)
     except Exception:
         return False
 
@@ -185,13 +184,15 @@ class Game:
                 busy.add(n)
             path = src if n == 0 else os.path.join(INST_DIR, f'sm64_{tag}p{os.getpid()}_{n}.dll')
         self._slot = n
-        if not os.path.exists(path) or os.path.getsize(path) != os.path.getsize(src):
+        if not winload.IS_WIN:
+            path = src                  # every winload load is its own copy of the image: no file copy needed
+        elif not os.path.exists(path) or os.path.getsize(path) != os.path.getsize(src):
             os.makedirs(INST_DIR, exist_ok=True)
             tmp = f'{path}.{os.getpid()}.tmp'
             shutil.copyfile(src, tmp)
             os.replace(tmp, path)
         self.path = path
-        self.dll = ctypes.CDLL(path)
+        self.dll = winload.load_library(path)
         self._closed = False
         _live.append(_weakref.ref(self))
         self.base = self.dll._handle
@@ -611,7 +612,8 @@ end)
         f.write(lua_code)
         
     t0 = time.time()
-    p = subprocess.Popen([mupen, '--rom', rom, '--movie', movie_path, '--lua', lua])
+    import hl_paths
+    p = subprocess.Popen(hl_paths.mupen_cmd(mupen) + ['--rom', rom, '--movie', movie_path, '--lua', lua])
     
     success = False
     try:
@@ -673,7 +675,8 @@ end)
     with open(lua, 'w') as f:
         f.write(lua_code)
         
-    p = subprocess.Popen([mupen, '--rom', rom, '--lua', lua])
+    import hl_paths
+    p = subprocess.Popen(hl_paths.mupen_cmd(mupen) + ['--rom', rom, '--lua', lua])
     try:
         while time.time() - t0 < timeout:
             if os.path.exists(done):

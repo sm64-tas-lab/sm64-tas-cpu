@@ -630,7 +630,7 @@ class Plan:
                     self.i, self.n = self.i + 1, 0
                     continue
                 if self.n >= ph.get('max', 60):
-                    self.status, self.why = 'fail', f"phase {self.i}: {ph['until']} not reached in {ph.get('max', 60)} f"
+                    self.status, self.why = 'fail', f"phase {self.i}: {ph['until']} not reached in {ph.get('max', 60)} f, got {NAME.get(action, hex(action))}"
                     return None
                 return self._emit(ph, face, aim)
             if self.n < self._frames(ph):

@@ -1,4 +1,5 @@
 import ctypes
+import winload  # kernel32 / the rh_*.dll on Windows and Linux
 import json
 import os
 import struct
@@ -519,7 +520,7 @@ def graft_env_regions(g, st):
     if n != g.read(ph, 'h') or not 0 < n < 64:
         return f'different box counts (st {n}, host {g.read(ph, "h")})'
     data = struct.pack(f'<{1 + 6 * n}h', *(st.get('h', pn + 2 * i) for i in range(1 + 6 * n)))
-    k32 = ctypes.windll.kernel32
+    k32 = winload.kernel32()
     old = ctypes.c_uint32()
     k32.VirtualProtect(ctypes.c_void_p(ph), len(data), 0x04, ctypes.byref(old))
     changed = ctypes.string_at(ph, len(data)) != data
@@ -683,7 +684,7 @@ def reload_animations(g, st, tr):
         buf = g.addr('gMarioAnimsBuf')
         if anim_id >= 0:
             _write_q(buf + 8, 0)
-            load = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int)(g.base + g.syms['load_patchable_table'])
+            load = winload.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int)(g.base + g.syms['load_patchable_table'])
             target = g.read(buf, 'Q', 0x10)
             if load(buf, anim_id):
                 for f in ('values', 'index'):
