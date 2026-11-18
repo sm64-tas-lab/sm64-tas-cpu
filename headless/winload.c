@@ -343,6 +343,21 @@ static void *wl_module_sym(wl_module *m, const char *name) {
 static __thread int t_errno_ms;
 static __thread uint32_t t_last_error;
 
+/* An MS shim never touches a __thread variable itself, only through these SysV functions. In this shared object a
+   __thread access is a call to __tls_get_addr (global-dynamic model) that GCC does not count as a call: an ms_abi
+   function neither saves rdi / rsi / xmm6-15 around it (kept by the callee on Windows, scratch for __tls_get_addr) nor
+   keeps rdi out of it (the TLS descriptor is loaded there). The DLL then found its registers changed: mingw's printf
+   keeps its flags in edi across _errno(), which left them holding an address of this library, so sprintf wrote to a
+   FILE or nowhere depending on where ASLR put us (#21). A real call to a SysV function makes the ms_abi caller save
+   everything Windows expects kept; noipa stops GCC from learning that the callee clobbers less. */
+#if defined(__clang__)
+#define WL_TLS_ACCESSOR __attribute__((noinline))
+#else
+#define WL_TLS_ACCESSOR __attribute__((noinline, noipa))
+#endif
+static WL_TLS_ACCESSOR int *tls_errno(void) { return &t_errno_ms; }
+static WL_TLS_ACCESSOR uint32_t *tls_last_error(void) { return &t_last_error; }
+
 static MS void *s_memcpy(void *d, const void *s, size_t n) { return memcpy(d, s, n); }
 static MS void *s_memmove(void *d, const void *s, size_t n) { return memmove(d, s, n); }
 static MS void *s_memset(void *d, int c, size_t n) { return memset(d, c, n); }
@@ -374,7 +389,7 @@ static MS void *s_aligned_malloc(size_t n, size_t al) {
     return posix_memalign(&p, al, n ? n : 1) == 0 ? p : NULL;
 }
 static MS void s_aligned_free(void *p) { free(p); }
-static MS int *s_errno(void) { return &t_errno_ms; }
+static MS int *s_errno(void) { return tls_errno(); }
 static MS int s_abs(int x) { return x < 0 ? -x : x; }
 static MS long long s_llabs(long long x) { return x < 0 ? -x : x; }
 static MS int s_atoi(const char *s) { return atoi(s); }
@@ -663,8 +678,8 @@ MS void s_longjmp(void *buf, int v);
 /* ------------------------------------------------------------------------------------------------------------------ */
 /* shims: kernel32                                                                                                    */
 
-static MS uint32_t k_GetLastError(void) { return t_last_error; }
-static MS void k_SetLastError(uint32_t e) { t_last_error = e; }
+static MS uint32_t k_GetLastError(void) { return *tls_last_error(); }
+static MS void k_SetLastError(uint32_t e) { *tls_last_error() = e; }
 static MS uint32_t k_GetCurrentThreadId(void) { return (uint32_t)syscall(SYS_gettid); }
 static MS uint32_t k_GetCurrentProcessId(void) { return (uint32_t)getpid(); }
 static MS intptr_t k_GetCurrentProcess(void) { return -1; }
@@ -720,6 +735,7 @@ static MS void k_DeleteCriticalSection(void *cs) { pthread_mutex_destroy((pthrea
 /* TLS / FLS slots */
 #define WL_TLS 1088
 static __thread void *t_tls[WL_TLS];
+static WL_TLS_ACCESSOR void **tls_slots(void) { return t_tls; }
 static uint8_t g_tls_used[WL_TLS];
 static pthread_mutex_t g_tls_lock = PTHREAD_MUTEX_INITIALIZER;
 static MS uint32_t k_TlsAlloc(void) {
@@ -732,8 +748,8 @@ static MS uint32_t k_TlsAlloc(void) {
 }
 static MS uint32_t k_FlsAlloc(void *cb) { (void)cb; return k_TlsAlloc(); }
 static MS int k_TlsFree(uint32_t i) { if (i < WL_TLS) g_tls_used[i] = 0; return 1; }
-static MS void *k_TlsGetValue(uint32_t i) { t_last_error = 0; return i < WL_TLS ? t_tls[i] : NULL; }
-static MS int k_TlsSetValue(uint32_t i, void *v) { if (i >= WL_TLS) return 0; t_tls[i] = v; return 1; }
+static MS void *k_TlsGetValue(uint32_t i) { *tls_last_error() = 0; return i < WL_TLS ? tls_slots()[i] : NULL; }
+static MS int k_TlsSetValue(uint32_t i, void *v) { if (i >= WL_TLS) return 0; tls_slots()[i] = v; return 1; }
 
 /* heaps: one heap, the process allocator */
 static MS void *k_GetProcessHeap(void) { return (void *)0x484541500000ULL; }
@@ -787,14 +803,14 @@ static MS void *k_VirtualAlloc(void *addr, size_t n, uint32_t type, uint32_t pro
     }
     int fl = MAP_PRIVATE | MAP_ANONYMOUS | (addr ? MAP_FIXED_NOREPLACE : 0);
     void *p = mmap(addr, n, (type & 0x1000) ? prot_from_win(prot) : PROT_NONE, fl, -1, 0);
-    if (p == MAP_FAILED) { t_last_error = 8; return NULL; }
+    if (p == MAP_FAILED) { *tls_last_error() = 8; return NULL; }
     res_add(p, n);
     return p;
 }
 static MS int k_VirtualFree(void *a, size_t n, uint32_t type) {
     if (type & 0x8000) {                            /* MEM_RELEASE (size 0): the whole reservation */
         size_t r = res_take(a);
-        if (!r) { t_last_error = 487; return 0; }
+        if (!r) { *tls_last_error() = 487; return 0; }
         return munmap(a, r) == 0;
     }
     /* MEM_DECOMMIT: the pages' contents dropped and their access refused, as on Windows */
@@ -824,7 +840,7 @@ static MS int k_VirtualProtect(void *a, size_t n, uint32_t prot, uint32_t *old) 
     uintptr_t s = (uintptr_t)a & ~(uintptr_t)0xFFF;
     size_t len = (((uintptr_t)a + n + 0xFFF) & ~(uintptr_t)0xFFF) - s;
     uint32_t was = win_prot_of(s);
-    if (!was) { t_last_error = 487; return 0; }           /* ERROR_INVALID_ADDRESS */
+    if (!was) { *tls_last_error() = 487; return 0; }           /* ERROR_INVALID_ADDRESS */
     if (old) *old = was;
     return mprotect((void *)s, len, prot_from_win(prot)) == 0;
 }
@@ -1000,7 +1016,7 @@ static MS void *k_GetModuleHandleA(const char *name) {
     for (wl_module *m = g_mods; m; m = m->next)
         if (!strcasecmp(m->name, b)) { r = m->base; break; }
     pthread_mutex_unlock(&g_mods_lock);
-    if (!r) t_last_error = 126;
+    if (!r) *tls_last_error() = 126;
     return r;
 }
 static MS void *k_GetProcAddress(void *h, const char *name) {
@@ -1009,7 +1025,7 @@ static MS void *k_GetProcAddress(void *h, const char *name) {
     if (h == FAKE_CRT) return shim_lookup("msvcrt.dll", name);
     wl_module *m = wl_find_module_by_addr((uintptr_t)h);
     void *r = m ? wl_module_sym(m, name) : NULL;
-    if (!r) t_last_error = 127;
+    if (!r) *tls_last_error() = 127;
     return r;
 }
 
@@ -1284,6 +1300,10 @@ EXPORT void *wl_module_of(void *addr) {
     wl_module *m = wl_find_module_by_addr((uintptr_t)addr);
     return m ? m->base : NULL;
 }
+
+/* the shim an import is bound to (NULL when it would be a trap): for winload_abi_check.py, which calls them the
+   Windows way and checks the registers Windows expects kept */
+EXPORT void *wl_shim(const char *name) { return shim_lookup(NULL, name); }
 
 /* the names of the imports bound to a trap so far (one per line), for the doctor and the tests */
 EXPORT int wl_unresolved(char *out, size_t n) {
