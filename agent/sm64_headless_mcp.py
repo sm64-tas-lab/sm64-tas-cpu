@@ -38,7 +38,8 @@ def buttons_of(names):
 
 
 WHY = {'arrive': 'arrived', 'bloque': 'a dialog or a cutscene holds the game (close_dialog)',
-       'stuck': 'stuck (a wall, a slope or a gap holds Mario)', 'frames': 'out of frames (still on the way)',
+       'stuck': 'stuck (a wall, a slope or a gap holds Mario; path(x, z) goes around the walls)',
+       'frames': 'out of frames (still on the way)',
        'slid': 'slid back (a slope too steep to walk up)',
        'brule': 'burnt (lava or fire)', 'touche': 'hit by an enemy', 'chute': 'fell (out of the level\'s floor)',
        'niveau': 'the level changed', 'max': 'max'}

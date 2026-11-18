@@ -2,6 +2,7 @@
 
     python agent/test_scenarios.py          (a few minutes; one line a check, a non-zero exit if one fails)
 """
+import json
 import os
 import subprocess
 import sys
@@ -139,6 +140,16 @@ def cli_bom():
     check('play.py reads a file with a BOM', out.startswith('start -> {"pos_x"'), out[:60])
 
 
+def cli_params():
+    d = tempfile.mkdtemp()
+    f = os.path.join(d, 'run.txt')
+    open(f, 'w').write('start\nwalk 0 -4000 40\nmove lj_chain params={cycles:4}\n')
+    out = subprocess.run([sys.executable, os.path.join(HERE, 'play.py'), f], capture_output=True, text=True).stdout
+    move = json.loads([ln for ln in out.splitlines() if ln.startswith('move ')][0].split(' -> ', 1)[1])
+    check('play.py takes move params={cycles:4} (json.loads wants quotes, this does not)',
+          'error' not in move and 'frames_played' in move, move)
+
+
 def main():
     t0 = time.time()
     P = S.Play()
@@ -148,6 +159,7 @@ def main():
     coins(P)
     snapshot_other_run(P)
     cli_bom()
+    cli_params()
     print('%d check(s) failed, %.0f s' % (len(FAILS), time.time() - t0))
     return 1 if FAILS else 0
 
